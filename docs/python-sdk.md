@@ -1,94 +1,127 @@
 # Python SDK
 
-This document describes the Python SDK surface and package structure.
-
 ## Design Goals
 
 - One simple Python API for users.
-- Keep robot/provider specifics in extension packages.
-- Allow simulation and hardware stacks to evolve independently.
+- Three methods per robot: `observe()`, `act()`, `reset()`.
 - Every saved model is self-describing: load and deploy with zero context.
+- HuggingFace Hub native: push and pull policies like datasets.
 
-## SDK Entry Point
+## Install
 
-```python
-from rfx.robot import lerobot
-from rfx.teleop import run
-
-arm = lerobot.so101()
-run(arm, logging=True)
+```bash
+uv pip install rfx-sdk
 ```
 
-Primary surfaces:
+Or add to your project:
 
-- `rfx.robot` — Robot protocol, config, URDF, factory functions (`rfx.robot.lerobot`)
-- `rfx.teleop` — Teleoperation sessions, transport, recording
-- `rfx.collection` — Dataset recording, hub push/pull, collection helpers
-- `rfx.runtime` — CLI, lifecycle, health, otel
-- `rfx.sim` — Simulation backends
-- `rfx.nn` / `rfx.rl` — Neural policies and RL training
+```bash
+uv add rfx-sdk
+```
 
-When `config` is omitted, rfx uses built-in defaults (`GO2_CONFIG`/`SO101_CONFIG`) so examples work from wheel installs without repo-local YAML files.
+## Quick Start
+
+```python
+import rfx
+
+# Deploy a policy (one line)
+rfx.deploy("runs/my-policy", robot="so101")
+
+# Or from Hub
+rfx.deploy("hf://rfx-community/go2-walk-v1", robot="go2", duration=30)
+```
+
+## The Robot Interface
+
+Every robot -- simulated or real -- implements three methods:
+
+```python
+obs = robot.observe()    # {"state": Tensor(1, 64), "images": ...}
+robot.act(action)        # Tensor(1, 64)
+robot.reset()
+```
+
+Built-in robots:
+
+```python
+robot = rfx.SimRobot.from_config("so101.yaml", backend="genesis", viewer=True)
+robot = rfx.MockRobot(state_dim=12, action_dim=6)   # zero deps, for testing
+robot = rfx.RealRobot(rfx.SO101_CONFIG)              # real hardware
+```
+
+## Write a Policy
+
+A policy is any callable `Dict[str, Tensor] -> Tensor`. Use `@rfx.policy` to make it deployable from the CLI:
+
+```python
+# my_policy.py
+import torch
+import rfx
+
+@rfx.policy
+def hold_position(obs):
+    return torch.zeros(1, 64)  # hold still
+```
+
+```bash
+uv run rfx deploy my_policy.py --robot so101
+```
+
+For named joint control instead of raw tensor indices:
+
+```python
+@rfx.policy
+def grasp(obs):
+    return rfx.MotorCommands(
+        {"gripper": 0.8, "wrist_pitch": -0.2},
+        config=rfx.SO101_CONFIG,
+    ).to_tensor()
+```
+
+`MotorCommands` resolves joint names from any `RobotConfig`'s joint list. No hardcoded indices.
 
 ## Model Management
 
-Policies in rfx are saved as self-describing directories. Every saved model bundles its weights, architecture, robot config, and normalizer state so it can be loaded with zero knowledge of how it was trained.
+Policies are saved as self-describing directories. Every saved model bundles weights, architecture, robot config, and normalizer state.
 
 ### Save
 
 ```python
-from rfx.nn import MLP
-from rfx.utils.transforms import ObservationNormalizer
-
-policy = MLP(obs_dim=48, act_dim=12, hidden=[256, 256])
-normalizer = ObservationNormalizer(state_dim=48)
-# ... training loop ...
-
 policy.save("runs/go2-walk-v1",
     robot_config=config,
     normalizer=normalizer,
-    training_info={"total_steps": 50000, "best_reward": 245.3})
+    training_info={"total_steps": 50000})
 ```
 
-This creates:
+Creates:
 
 ```
 runs/go2-walk-v1/
-├── rfx_config.json        # Architecture + robot + training metadata
-├── model.safetensors      # Weight tensors (tinygrad safe_save format)
-└── normalizer.json        # ObservationNormalizer state (optional)
+  rfx_config.json       # architecture + robot + training metadata
+  model.safetensors     # weights
+  normalizer.json       # observation normalizer state
 ```
 
 ### Load
 
 ```python
 loaded = rfx.load_policy("runs/go2-walk-v1")
-loaded = rfx.load_policy("hf://rfx-community/go2-walk-v1")  # from HuggingFace Hub
+loaded = rfx.load_policy("hf://rfx-community/go2-walk-v1")
 
-loaded.policy           # The reconstructed tinygrad policy (MLP, ActorCritic, etc.)
+loaded.policy           # reconstructed policy
 loaded.robot_config     # RobotConfig or None
-loaded.normalizer       # ObservationNormalizer or None
+loaded.normalizer       # normalizer or None
 loaded.policy_type      # "MLP", "ActorCritic", etc.
-loaded.training_info    # {"total_steps": 50000, ...}
 ```
 
-`LoadedPolicy` is callable and handles torch/tinygrad conversion automatically, so it plugs directly into `rfx.run()`:
-
-```python
-robot = rfx.RealRobot("so101.yaml")
-rfx.run(robot, loaded, rate_hz=50)
-```
-
-When called with a `dict[str, torch.Tensor]` (as returned by `robot.observe()`), it normalizes, converts to tinygrad, runs the policy, and converts the action back to torch.
+`LoadedPolicy` is callable and handles torch/tinygrad conversion automatically.
 
 ### Inspect
-
-Quick metadata check without loading weights:
 
 ```python
 config = rfx.inspect_policy("runs/go2-walk-v1")
 print(config["policy_type"])     # "MLP"
-print(config["policy_config"])   # {"obs_dim": 48, "act_dim": 12, "hidden": [256, 256]}
+print(config["policy_config"])   # {"obs_dim": 48, ...}
 ```
 
 ### Share via HuggingFace Hub
@@ -97,89 +130,73 @@ print(config["policy_config"])   # {"obs_dim": 48, "act_dim": 12, "hidden": [256
 rfx.push_policy("runs/go2-walk-v1", "rfx-community/go2-walk-v1")
 ```
 
-### Custom Policy Types
+## Deploy API
 
-Register custom architectures so they can be auto-detected on load:
+`rfx.deploy()` is the main entry point. It handles everything: load policy, resolve robot config, create robot, run the control loop.
 
 ```python
-from rfx.nn import Policy, register_policy
+stats = rfx.deploy(
+    "runs/my-policy",      # path, hf:// URL, or .py file
+    robot="so101",          # robot type or YAML path
+    port="/dev/ttyACM0",    # optional hardware override
+    rate_hz=50,             # control frequency
+    duration=30,            # seconds (None = infinite)
+    mock=False,             # use MockRobot instead
+    device="cpu",           # torch device
+)
 
-@register_policy
-class MyTransformerPolicy(Policy):
-    def __init__(self, obs_dim, act_dim, num_heads=4):
-        ...
-
-    def config_dict(self):
-        return {"obs_dim": self.obs_dim, "act_dim": self.act_dim, "num_heads": self.num_heads}
-
-    def forward(self, obs):
-        ...
+# stats contains timing info
+print(stats.iterations, stats.overruns)
+print(stats.p50_jitter_s, stats.p95_jitter_s)
 ```
 
-### End-to-End Example
+## MotorCommands
+
+Build actions from named joints instead of raw tensor indices:
 
 ```python
-import rfx
-from rfx.nn import MLP
-from rfx.utils.transforms import ObservationNormalizer
+cmd = rfx.MotorCommands(
+    {"gripper": 0.8, "elbow": -0.3},
+    config=rfx.SO101_CONFIG,
+)
 
-# 1. Train
-config = rfx.RobotConfig(name="Go2", state_dim=48, action_dim=12, control_freq_hz=200)
-policy = MLP(obs_dim=48, act_dim=12, hidden=[256, 256])
-normalizer = ObservationNormalizer(state_dim=48)
-# ... training loop updates policy weights and normalizer stats ...
+action = cmd.to_tensor()          # shape: (1, 64)
+positions = cmd.to_list()         # flat list, length = action_dim
 
-# 2. Save
-policy.save("runs/go2-walk-v1",
-    robot_config=config,
-    normalizer=normalizer,
-    training_info={"total_steps": 50000, "best_reward": 245.3})
+# With batch size
+action = cmd.to_tensor(batch_size=4)  # shape: (4, 64)
 
-# 3. Share
-rfx.push_policy("runs/go2-walk-v1", "rfx-community/go2-walk-v1")
+# Factory method
+cmd = rfx.MotorCommands.from_positions(
+    {"elbow": 1.0},
+    config=rfx.SO101_CONFIG,
+    kp=30.0,
+)
+```
 
-# 4. Load (on any machine)
-loaded = rfx.load_policy("hf://rfx-community/go2-walk-v1")
+Works with any robot config -- joint names are resolved from `config.joints`.
 
-# 5. Deploy
-robot = rfx.RealRobot(loaded.robot_config)
-rfx.run(robot, loaded, rate_hz=loaded.robot_config.control_freq_hz)
+## Built-in Robot Configs
+
+```python
+rfx.SO101_CONFIG   # 6 DOF arm, 50 Hz, joints: shoulder_pan, shoulder_lift, elbow, wrist_pitch, wrist_roll, gripper
+rfx.GO2_CONFIG     # 12 DOF quadruped, 200 Hz
+rfx.G1_CONFIG      # 29 DOF humanoid, 50 Hz
 ```
 
 ## Package Layout
 
 ```
 rfx/python/rfx/
-├── robot/          # Robot protocol, config, URDF, lerobot factories
-├── teleop/         # Teleoperation sessions, transport, recording
-├── collection/     # Dataset recording, hub integration, collect CLI helpers
+├── robot/          # Robot protocol, config, URDF
+├── collection/     # Dataset recording, hub integration
 ├── real/           # Real hardware backends (SO-101, Go2, G1)
 ├── sim/            # Simulation backends (MuJoCo, Genesis, mock)
-├── nn/             # Neural network policies (MLP, ActorCritic)
-├── rl/             # RL training loops
-├── envs/           # Gym-style environments
-├── runtime/        # CLI, lifecycle, health, otel, dora bridge
-├── drivers/        # Hardware driver registry
-├── tf/             # Transform broadcaster/listener
-├── workflow/       # Training workflow stages
-├── agent.py        # LLM agent integration
-├── skills.py       # Skill registry
-├── hub.py          # Model save/load/push
-├── session.py      # Session runner
-├── decorators.py   # @control_loop, @policy, MotorCommands
-├── jit.py          # JIT compilation runtime
+├── runtime/        # CLI
+├── hub.py          # Model save/load/push (HuggingFace Hub)
+├── session.py      # Rate-controlled control loop
+├── deploy.py       # rfx.deploy() implementation
+├── decorators.py   # @policy, MotorCommands
 ├── node.py         # Zenoh transport factory & discovery
 └── observation.py  # Observation spec & padding
-```
-
-## Boundary Rules
-
-- `rfx-sdk` (distribution) should not depend on robot-specific hardware packages.
-- Simulation backends are optional (installed via `rfx-sdk[teleop]`).
-- LeRobot integration is optional (installed via `rfx-sdk[teleop-lerobot]`).
-
-## Run Example
-
-```bash
-uv run --python 3.13 rfx/examples/universal_go2.py --backend genesis --auto-install
 ```

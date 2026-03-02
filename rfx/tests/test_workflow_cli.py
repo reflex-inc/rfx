@@ -33,133 +33,83 @@ def _write_dataset(path: Path) -> None:
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 
 
-def test_golden_path_stages_write_run_records(monkeypatch, tmp_path: Path) -> None:
+def test_train_creates_run_record(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    dataset = tmp_path / "dataset.jsonl"
+    _write_dataset(dataset)
+
+    assert _invoke(["train", "--data", str(dataset)]) == 0
+
+    runs = list_runs(stage="train", limit=1)
+    assert len(runs) == 1
+    assert runs[0]["status"] == "succeeded"
+
+
+def test_train_with_config(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     dataset = tmp_path / "dataset.jsonl"
     _write_dataset(dataset)
     config = tmp_path / "robot.json"
     config.write_text(json.dumps({"name": "SO-101"}))
-    metrics = tmp_path / "metrics.json"
-    metrics.write_text(json.dumps({"success_rate": 0.9}))
 
-    assert _invoke(["collect", "--config", str(config), "--input", str(dataset)]) == 0
-    assert _invoke(["validate", "--dataset", str(dataset), "--input", str(dataset)]) == 0
-    assert (
-        _invoke(
-            [
-                "train",
-                "--config",
-                str(config),
-                "--input",
-                str(dataset),
-                "--safety-profile",
-                "safe-default",
-            ]
-        )
-        == 0
-    )
+    assert _invoke(["train", "--data", str(dataset), "--config", str(config)]) == 0
 
-    train_run = list_runs(stage="train", limit=1)[0]
-    artifact_ref = train_run["metadata"]["artifact_ref"]
-    config_hash = train_run["artifacts"][0]["digest"]
-
-    assert (
-        _invoke(
-            [
-                "eval",
-                "--artifact-ref",
-                artifact_ref,
-                "--metrics-json",
-                str(metrics),
-                "--min-success-rate",
-                "0.5",
-            ]
-        )
-        == 0
-    )
-    assert (
-        _invoke(
-            [
-                "deploy",
-                "--artifact-ref",
-                artifact_ref,
-                "--robot-config-hash",
-                train_run["config_snapshot"]["digest"],
-                "--safety-profile",
-                "safe-default",
-            ]
-        )
-        == 0
-    )
-    # Artifact digest and config hash are both tracked in run metadata.
-    assert isinstance(config_hash, str) and len(config_hash) > 8
-
-    runs = list_runs(limit=20)
-    assert len(runs) >= 5
-    run_ids = [run["run_id"] for run in runs]
-    assert len(run_ids) == len(set(run_ids))
+    runs = list_runs(stage="train", limit=1)
+    assert len(runs) == 1
 
 
-def test_deploy_gate_blocks_without_eval(monkeypatch, tmp_path: Path) -> None:
+def test_runs_list_empty(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
-    dataset = tmp_path / "dataset.jsonl"
-    _write_dataset(dataset)
-
-    assert _invoke(["train", "--input", str(dataset)]) == 0
-    train_run = list_runs(stage="train", limit=1)[0]
-    artifact_ref = train_run["metadata"]["artifact_ref"]
-
-    rc = _invoke(["deploy", "--artifact-ref", artifact_ref])
-    assert rc == 2
-    deploy_run = list_runs(stage="deploy", limit=1)[0]
-    assert deploy_run["status"] == "blocked"
+    assert _invoke(["runs", "list"]) == 0
 
 
-def test_reproduce_reports_missing_inputs(monkeypatch, tmp_path: Path) -> None:
+def test_deploy_missing_policy_returns_error(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
-    data_path = tmp_path / "input.bin"
-    data_path.write_bytes(b"abc")
-
-    assert _invoke(["collect", "--input", str(data_path)]) == 0
-    run_id = list_runs(stage="collect", limit=1)[0]["run_id"]
-    data_path.unlink()
-
-    rc = _invoke(["reproduce", run_id])
-    assert rc == 2
+    rc = _invoke(["deploy", "nonexistent/path", "--robot", "so101", "--mock"])
+    assert rc == 1
 
 
-def test_collect_cli_maps_collection_metadata(monkeypatch, tmp_path: Path) -> None:
+def test_deploy_parser_accepts_all_flags() -> None:
+    parser = build_parser()
+    ns = parser.parse_args([
+        "deploy", "runs/my-policy",
+        "--robot", "so101",
+        "--port", "/dev/ttyACM0",
+        "--rate-hz", "100",
+        "--duration", "10",
+        "--mock",
+        "--warmup", "1.0",
+    ])
+    assert ns.policy == "runs/my-policy"
+    assert ns.robot == "so101"
+    assert ns.port == "/dev/ttyACM0"
+    assert ns.rate_hz == 100.0
+    assert ns.duration == 10.0
+    assert ns.mock is True
+    assert ns.warmup == 1.0
+
+
+def test_record_parser_accepts_all_flags() -> None:
+    parser = build_parser()
+    ns = parser.parse_args([
+        "record",
+        "--robot", "so101",
+        "--repo-id", "my-org/demos",
+        "--episodes", "5",
+        "--duration", "30",
+        "--fps", "60",
+        "--push",
+        "--mcap",
+    ])
+    assert ns.robot == "so101"
+    assert ns.repo_id == "my-org/demos"
+    assert ns.episodes == 5
+    assert ns.duration == 30.0
+    assert ns.fps == 60
+    assert ns.push is True
+    assert ns.mcap is True
+
+
+def test_doctor_runs(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
-
-    assert (
-        _invoke(
-            [
-                "collect",
-                "--repo-id",
-                "local/demo",
-                "--episodes",
-                "2",
-                "--duration",
-                "0.0",
-                "--task",
-                "pick-place",
-                "--fps",
-                "60",
-                "--state-dim",
-                "8",
-                "--collection-root",
-                "datasets_out",
-            ]
-        )
-        == 0
-    )
-
-    collect_run = list_runs(stage="collect", limit=1)[0]
-    metadata = collect_run["metadata"]
-    assert metadata["repo_id"] == "local/demo"
-    assert metadata["episodes"] == 2
-    assert metadata["duration"] == 0.0
-    assert metadata["task"] == "pick-place"
-    assert metadata["fps"] == 60
-    assert metadata["state_dim"] == 8
-    assert metadata["output"] == "datasets_out"
+    assert _invoke(["doctor"]) == 0

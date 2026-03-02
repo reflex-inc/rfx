@@ -19,32 +19,26 @@
 uv pip install rfx-sdk
 ```
 
-```python
-import rfx
+Three commands. Any robot. Any policy.
 
-# Every robot, same interface
-robot = rfx.RealRobot("so101.yaml")
-obs = robot.observe()
-robot.act(action)
-
-# Every model, self-describing
-loaded = rfx.load_policy("hf://rfx-community/go2-walk-v1")
-rfx.run(robot, loaded, rate_hz=50)
+```bash
+rfx record --robot so101 --repo-id my-org/demos --episodes 10
+rfx deploy runs/my-policy --robot so101
+rfx deploy hf://user/my-policy --robot go2 --duration 60
 ```
 
 ---
 
 ## Why rfx
 
-ROS was built for message passing between components. We're in a different era -- the workflow is **collect demos, train a policy, deploy, iterate**. rfx is built from scratch for that loop, with all the infrastructure you'd expect from a robotics framework underneath.
+ROS was built for message passing between components. We're in a different era -- the workflow is **collect demos, train a policy, deploy, iterate**. rfx is built from scratch for that loop.
 
-- **Rust core** for real-time control, Python SDK for fast research
+- **Three commands** -- `rfx record`, `rfx deploy`, `rfx doctor` -- that's the whole CLI
 - **Three-method robot interface** -- `observe()`, `act()`, `reset()` -- same API for sim and real
 - **Self-describing models** -- save once, load anywhere, deploy with zero config
 - **HuggingFace Hub native** -- push and pull policies like you push datasets
-- **Zenoh transport** -- pub/sub topics, nodes, launch graphs -- all the ROS primitives, none of the pain
-- **ROS 2 interop** -- coexist with existing ROS 2 stacks via zenoh-plugin-ros2dds bridge
-- **Batteries included** -- simulation (Genesis, MJX), teleoperation, LeRobot export, hardware drivers
+- **Rust core** for real-time control, Python SDK for fast research
+- **Zenoh transport** underneath -- invisible plumbing, there when you need it
 
 ## Install
 
@@ -52,10 +46,10 @@ ROS was built for message passing between components. We're in a different era -
 uv pip install rfx-sdk
 ```
 
-With simulation and robot extras:
+Or with pip:
 
 ```bash
-uv pip install rfx-sdk rfx-sdk-sim rfx-sdk-go2 rfx-sdk-lerobot
+pip install rfx-sdk
 ```
 
 From source:
@@ -65,50 +59,100 @@ git clone https://github.com/quantbagel/rfx.git && cd rfx
 bash scripts/setup-from-source.sh
 ```
 
-## The interface
+All CLI commands can also be run directly with `uv`:
 
-Every robot in rfx -- simulated or real -- implements the same three methods:
+```bash
+uv run rfx deploy runs/my-policy --robot so101
+uv run rfx record --robot so101 --repo-id demos --episodes 10
+```
+
+## Record demos
+
+Collect teleoperation demonstrations into a LeRobot dataset:
+
+```bash
+rfx record --robot so101 --repo-id my-org/demos --episodes 10
+```
 
 ```python
-robot = rfx.SimRobot.from_config("go2.yaml", backend="genesis")
-# robot = rfx.RealRobot("so101.yaml", port="/dev/ttyACM0")
+# Or from Python
+rfx.collection.collect("so101", "my-org/demos", episodes=10)
+```
 
+## Deploy a policy
+
+Load a trained policy and run it on hardware. One command:
+
+```bash
+# From a saved checkpoint
+rfx deploy runs/my-policy --robot so101
+
+# From HuggingFace Hub
+rfx deploy hf://rfx-community/go2-walk-v1 --robot go2
+
+# From a Python file with @rfx.policy
+rfx deploy my_policy.py --robot so101
+
+# Test without hardware
+rfx deploy runs/my-policy --robot so101 --mock
+```
+
+```python
+# Or from Python
+rfx.deploy("runs/my-policy", robot="so101")
+rfx.deploy("hf://user/policy", robot="go2", duration=30)
+```
+
+Deploy handles everything: load weights, resolve robot config, connect hardware, run the control loop with rate control and jitter tracking, clean shutdown on Ctrl+C.
+
+## The robot interface
+
+Every robot -- simulated or real -- implements three methods:
+
+```python
 obs = robot.observe()    # {"state": Tensor(1, 64), "images": ...}
 robot.act(action)        # Tensor(1, 64)
 robot.reset()
 ```
 
-Run a policy against any robot with one call:
+## Write a policy
+
+A policy is any callable `Dict[str, Tensor] -> Tensor`. Use `@rfx.policy` to make it deployable from the CLI:
 
 ```python
-rfx.run(robot, policy, rate_hz=200, duration=30.0)
+# my_policy.py
+import torch
+import rfx
+
+@rfx.policy
+def hold_position(obs):
+    return torch.zeros(1, 64)  # hold still
 ```
 
-Rate-controlled loop with jitter tracking, error handling, and clean shutdown built in.
+```bash
+rfx deploy my_policy.py --robot so101
+```
 
-## Train
+For named joint control instead of raw tensor indices:
 
 ```python
-from rfx.nn import MLP
-from rfx.utils.transforms import ObservationNormalizer
-
-policy = MLP(obs_dim=48, act_dim=12, hidden=[256, 256])
-normalizer = ObservationNormalizer(state_dim=48)
-
-# ... your training loop ...
+@rfx.policy
+def grasp(obs):
+    return rfx.MotorCommands(
+        {"gripper": 0.8, "wrist_pitch": -0.2},
+        config=rfx.SO101_CONFIG,
+    ).to_tensor()
 ```
 
-tinygrad-native policies. MLP, ActorCritic, or subclass `Policy` for your own architecture.
+## Save and share models
 
-## Save
-
-Every saved model is a self-describing directory. Weights, architecture, robot config, normalizer -- everything needed to reconstruct and deploy.
+Every saved model is a self-describing directory:
 
 ```python
 policy.save("runs/go2-walk-v1",
     robot_config=config,
     normalizer=normalizer,
-    training_info={"total_steps": 50000, "best_reward": 245.3})
+    training_info={"total_steps": 50000})
 ```
 
 ```
@@ -118,33 +162,11 @@ runs/go2-walk-v1/
   normalizer.json       # observation normalizer state
 ```
 
-Push to HuggingFace Hub:
+Push to Hub, load anywhere:
 
 ```python
 rfx.push_policy("runs/go2-walk-v1", "rfx-community/go2-walk-v1")
-```
-
-## Load and deploy
-
-Load from disk or Hub. No need to know the architecture, hyperparameters, or training setup.
-
-```python
-loaded = rfx.load_policy("runs/go2-walk-v1")
 loaded = rfx.load_policy("hf://rfx-community/go2-walk-v1")
-
-loaded.policy_type       # "MLP"
-loaded.robot_config      # RobotConfig(name="Go2", ...)
-loaded.training_info     # {"total_steps": 50000, "best_reward": 245.3}
-
-# Deploy -- torch/tinygrad conversion handled automatically
-robot = rfx.RealRobot(loaded.robot_config)
-rfx.run(robot, loaded, rate_hz=loaded.robot_config.control_freq_hz)
-```
-
-Inspect metadata without loading weights:
-
-```python
-rfx.inspect_policy("runs/go2-walk-v1")
 ```
 
 ## Supported hardware
@@ -153,150 +175,16 @@ rfx.inspect_policy("runs/go2-walk-v1")
 |-------|------|-----------|--------|
 | **SO-101** | 6-DOF arm | USB serial (Rust driver) | Ready |
 | **Unitree Go2** | Quadruped | Ethernet (Zenoh transport) | Ready |
+| **Unitree G1** | Humanoid | Ethernet (Zenoh transport) | In progress |
 
-Custom robots: implement `observe()` / `act()` / `reset()` or write a YAML config with URDF.
+Custom robots: implement `observe()` / `act()` / `reset()` or write a YAML config.
 
 ## Simulation
 
 ```python
-# Genesis (GPU-accelerated)
 robot = rfx.SimRobot.from_config("so101.yaml", backend="genesis", viewer=True)
-
-# MJX (JAX-accelerated MuJoCo)
 robot = rfx.SimRobot.from_config("go2.yaml", backend="mjx", num_envs=4096)
-
-# Mock (zero dependencies, for testing)
-robot = rfx.MockRobot(state_dim=12, action_dim=6)
-```
-
-## Teleoperation
-
-Bimanual SO-101 recording:
-
-```python
-from rfx.teleop import run, so101
-
-arm = so101()
-run(arm, logging=True, rate_hz=200, duration_s=30.0)
-```
-
-## Communication and runtime
-
-Under the hood, rfx has a full robotics communication stack built on [Zenoh](https://zenoh.io) -- topics, nodes, launch files, graph introspection. It's there when you need it, invisible when you don't.
-
-```python
-from rfx.teleop import create_transport
-
-# Pub/sub messaging -- Zenoh transport (Rust-backed, compiled in by default)
-transport = create_transport()
-transport.publish("robot/state", state_bytes)
-sub = transport.subscribe("robot/cmd")
-envelope = sub.recv(timeout_s=1.0)
-```
-
-Nodes follow a simple lifecycle contract:
-
-```python
-from rfx.runtime.node import Node
-
-class ControlNode(Node):
-    publish_topics = ("robot/cmd",)
-    subscribe_topics = ("robot/state",)
-
-    def setup(self):    ...   # init
-    def tick(self):     ...   # one loop iteration
-    def shutdown(self): ...   # cleanup
-```
-
-Launch multiple nodes from a YAML graph:
-
-```yaml
-name: go2-deploy
-nodes:
-  - package: go2_ctrl
-    node: policy_node
-    rate_hz: 200
-  - package: go2_ctrl
-    node: logger_node
-    rate_hz: 10
-```
-
-```bash
-rfx launch go2_deploy.yaml
-rfx graph        # inspect the active node graph
-rfx topic-list   # see all live topics
-```
-
-**ROS 2 coexistence**: rfx topics are visible to ROS 2 tools via the [zenoh-plugin-ros2dds](https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds) bridge. Migrate incrementally -- run rfx nodes alongside existing ROS 2 nodes, no code changes required on either side.
-
-**Enterprise scaling**: The same code that runs on one robot runs on a fleet. No architecture changes, no extra infra. [Get in touch](https://discord.gg/xV8bAGM8WT) -- we'll handle scaling so you don't have to.
-
-### Production Zenoh setup
-
-Zenoh is compiled into the native extension by default -- no extra packages to install. Single-machine setups work out of the box with automatic peer discovery.
-
-For multi-machine deployments, pass endpoints explicitly:
-
-```python
-from rfx.node import auto_transport
-
-transport = auto_transport(
-    connect=["tcp/192.168.1.100:7447"],  # remote Zenoh router
-    shared_memory=True,                   # zero-copy on same machine
-)
-```
-
-Or configure via environment:
-
-```bash
-export RFX_ZENOH_CONNECT="tcp/192.168.1.100:7447"   # comma-separated endpoints
-export RFX_ZENOH_LISTEN="tcp/0.0.0.0:7447"           # listen for incoming peers
-export RFX_ZENOH_SHARED_MEMORY=0                      # disable shared memory if needed
-```
-
-Shared-memory transport is enabled by default for same-machine zero-copy between processes.
-
-## rfxJIT
-
-Built-in kernel compiler that lowers and executes across `cpu`, `cuda`, and `metal`. IR-based autodiff, optimization passes (constant folding, dead-op elimination, fusion), and a tinyJIT-style cache+replay runtime.
-
-```python
-from rfx.jit import value_and_grad, available_backends
-
-# JAX-style functional transforms
-loss_and_grads = value_and_grad(loss_fn)
-
-# Check what's available on this machine
-available_backends()  # {"cpu": True, "cuda": True, "metal": False}
-```
-
-Enable globally via environment:
-
-```bash
-export RFX_JIT=1                   # enable rfxJIT execution paths
-export RFX_JIT_BACKEND=auto        # auto | cpu | cuda | metal
-```
-
-When enabled, policy inference automatically routes through rfxJIT when possible, with transparent fallback to tinygrad's TinyJit.
-
-## Custom policies
-
-Register your own architectures for automatic save/load:
-
-```python
-from rfx.nn import Policy, register_policy
-
-@register_policy
-class MyPolicy(Policy):
-    def __init__(self, obs_dim, act_dim):
-        self.obs_dim, self.act_dim = obs_dim, act_dim
-        # ... build layers ...
-
-    def config_dict(self):
-        return {"obs_dim": self.obs_dim, "act_dim": self.act_dim}
-
-    def forward(self, obs):
-        # ... your forward pass ...
+robot = rfx.MockRobot(state_dim=12, action_dim=6)  # zero deps, for testing
 ```
 
 ## Docs
@@ -305,14 +193,12 @@ class MyPolicy(Policy):
 - [SO-101 quickstart](docs/so101.md)
 - [Simulation guide](docs/sim.md)
 - [Python SDK reference](docs/python-sdk.md)
-- [Contributor workflow](docs/workflow.md)
 
 ## Community
 
 - [Issues](https://github.com/quantbagel/rfx/issues)
 - [Discussions](https://github.com/quantbagel/rfx/discussions)
 - [Discord](https://discord.gg/xV8bAGM8WT)
-- [Contributing](CONTRIBUTING.md)
 
 ## License
 

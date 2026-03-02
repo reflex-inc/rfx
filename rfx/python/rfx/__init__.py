@@ -68,7 +68,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 from . import jit, node, robot, runtime, utils, workflow  # noqa: E402
 from .agent import Agent  # noqa: E402
-from .decorators import MotorCommands, control_loop, policy  # noqa: E402
+from .decorators import MotorCommands, policy  # noqa: E402
+from .deploy import deploy  # noqa: E402
 from .hub import LoadedPolicy, inspect_policy, load_policy, push_policy  # noqa: E402
 from .observation import ObservationSpec, make_observation, unpad_action  # noqa: E402
 from .robot import URDF, Robot, RobotBase, RobotConfig, load_config  # noqa: E402
@@ -132,7 +133,7 @@ __all__ = [
     "Skill",
     "SkillRegistry",
     "URDF",
-    "control_loop",
+    "deploy",
     "inspect_policy",
     "jit",
     "load_config",

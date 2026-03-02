@@ -4,259 +4,161 @@ from typing import Any
 
 import pytest
 
-from rfx.decorators import MotorCommands, control_loop, policy
+from rfx.decorators import MotorCommands, policy
+from rfx.robot.config import JointConfig, RobotConfig
+
+# ---------------------------------------------------------------------------
+# @policy decorator
+# ---------------------------------------------------------------------------
 
 
-class TestControlLoopDecorator:
-    """Tests for the @control_loop decorator."""
+class TestPolicyDecorator:
 
-    def test_control_loop_default(self) -> None:
-        """Test decorator with default settings."""
+    def test_policy_bare(self) -> None:
+        """@rfx.policy without parentheses."""
 
-        @control_loop()
-        def my_policy(state: Any) -> Any:
-            """Test policy."""
-            return state
+        @policy
+        def my_policy(obs: Any) -> Any:
+            return obs
 
-        assert hasattr(my_policy, "_rfx_control_loop")
-        assert my_policy._rfx_control_loop is True
-        assert my_policy._rfx_rate_hz == 500.0
-        assert my_policy._rfx_name == "my_policy"
+        assert hasattr(my_policy, "_rfx_policy")
+        assert my_policy._rfx_policy is True
 
-    def test_control_loop_custom_rate(self) -> None:
-        """Test decorator with custom rate."""
+    def test_policy_with_parens(self) -> None:
+        """@rfx.policy() with parentheses."""
 
-        @control_loop(rate_hz=1000.0)
-        def fast_policy(state: Any) -> Any:
-            """Fast policy."""
-            return state
+        @policy()
+        def my_policy(obs: Any) -> Any:
+            return obs
 
-        assert fast_policy._rfx_rate_hz == 1000.0
+        assert my_policy._rfx_policy is True
 
-    def test_control_loop_custom_name(self) -> None:
-        """Test decorator with custom name."""
-
-        @control_loop(name="balance")
-        def my_policy(state: Any) -> Any:
-            """Balance policy."""
-            return state
-
-        assert my_policy._rfx_name == "balance"
-
-    def test_control_loop_preserves_function(self) -> None:
-        """Test that decorated function still works."""
-
-        @control_loop(rate_hz=100.0)
-        def double_it(x: int) -> int:
-            """Double the input."""
+    def test_policy_preserves_function(self) -> None:
+        @policy
+        def double(x: int) -> int:
             return x * 2
 
-        result = double_it(5)
-        assert result == 10
+        assert double(5) == 10
 
-    def test_control_loop_preserves_docstring(self) -> None:
-        """Test that docstring is preserved."""
+    def test_policy_preserves_docstring(self) -> None:
+        @policy
+        def documented(obs: Any) -> Any:
+            """My docstring."""
+            return obs
 
-        @control_loop()
-        def documented_policy(state: Any) -> Any:
-            """This is the docstring."""
-            return state
+        assert documented.__doc__ == "My docstring."
 
-        assert documented_policy.__doc__ == "This is the docstring."
-
-    def test_control_loop_preserves_name(self) -> None:
-        """Test that function name is preserved."""
-
-        @control_loop()
-        def original_name(state: Any) -> Any:
-            """Test."""
-            return state
+    def test_policy_preserves_name(self) -> None:
+        @policy
+        def original_name(obs: Any) -> Any:
+            return obs
 
         assert original_name.__name__ == "original_name"
 
 
-class TestPolicyDecorator:
-    """Tests for the @policy decorator."""
+# ---------------------------------------------------------------------------
+# MotorCommands — config-aware
+# ---------------------------------------------------------------------------
 
-    def test_policy_default(self) -> None:
-        """Test decorator with default settings."""
 
-        @policy()
-        def my_policy(state: Any) -> Any:
-            """Test policy."""
-            return state
+def _make_config(joints: list[tuple[str, int]], action_dim: int = 6) -> RobotConfig:
+    return RobotConfig(
+        name="test-robot",
+        state_dim=action_dim * 2,
+        action_dim=action_dim,
+        max_state_dim=64,
+        max_action_dim=64,
+        joints=[JointConfig(name=n, index=i) for n, i in joints],
+    )
 
-        assert hasattr(my_policy, "_rfx_policy")
-        assert my_policy._rfx_policy is True
-        assert my_policy._rfx_model is None
-        assert my_policy._rfx_jit is False
 
-    def test_policy_with_model_raises(self) -> None:
-        """Test that specifying model raises NotImplementedError."""
-
-        @policy(model="walking.onnx")
-        def neural_policy(state: Any) -> Any:
-            """Neural policy."""
-            return state
-
-        with pytest.raises(NotImplementedError, match="Neural network policies"):
-            neural_policy({})
-
-    def test_policy_with_jit(self) -> None:
-        """Test decorator with JIT flag."""
-
-        @policy(jit=True)
-        def jit_policy(state: Any) -> Any:
-            """JIT policy."""
-            return state
-
-        assert jit_policy._rfx_jit is True
-
-    def test_policy_preserves_function(self) -> None:
-        """Test that decorated function still works (when no model)."""
-
-        @policy()
-        def passthrough(x: int) -> int:
-            """Pass through."""
-            return x
-
-        result = passthrough(42)
-        assert result == 42
-
-    def test_policy_preserves_docstring(self) -> None:
-        """Test that docstring is preserved."""
-
-        @policy()
-        def documented_policy(state: Any) -> Any:
-            """Policy documentation."""
-            return state
-
-        assert documented_policy.__doc__ == "Policy documentation."
+SO101_JOINTS = [
+    ("shoulder_pan", 0),
+    ("shoulder_lift", 1),
+    ("elbow", 2),
+    ("wrist_pitch", 3),
+    ("wrist_roll", 4),
+    ("gripper", 5),
+]
 
 
 class TestMotorCommands:
-    """Tests for the MotorCommands class."""
 
-    def test_motor_commands_init_empty(self) -> None:
-        """Test creating empty motor commands."""
+    def test_empty(self) -> None:
         cmd = MotorCommands()
-
         assert cmd.positions == {}
-        assert cmd.velocities == {}
-        assert cmd.torques == {}
-        assert cmd.kp == 20.0
-        assert cmd.kd == 0.5
 
-    def test_motor_commands_init_with_positions(self) -> None:
-        """Test creating commands with positions."""
-        cmd = MotorCommands(positions={"FR_hip": 0.5, "FL_hip": -0.5})
+    def test_positions_stored(self) -> None:
+        cmd = MotorCommands({"gripper": 0.8, "elbow": -0.3})
+        assert cmd.positions == {"gripper": 0.8, "elbow": -0.3}
 
-        assert cmd.positions == {"FR_hip": 0.5, "FL_hip": -0.5}
+    def test_repr_with_config(self) -> None:
+        config = _make_config(SO101_JOINTS)
+        cmd = MotorCommands({"gripper": 0.8}, config=config)
+        r = repr(cmd)
+        assert "gripper" in r
+        assert "test-robot" in r
 
-    def test_motor_commands_init_with_gains(self) -> None:
-        """Test creating commands with custom gains."""
-        cmd = MotorCommands(kp=30.0, kd=1.0)
+    def test_repr_empty(self) -> None:
+        r = repr(MotorCommands())
+        assert "empty" in r
 
+    def test_from_positions(self) -> None:
+        config = _make_config(SO101_JOINTS)
+        cmd = MotorCommands.from_positions({"elbow": 1.0}, config=config, kp=30.0)
+        assert cmd.positions == {"elbow": 1.0}
         assert cmd.kp == 30.0
-        assert cmd.kd == 1.0
-
-    def test_motor_commands_from_positions(self) -> None:
-        """Test creating from positions factory."""
-        cmd = MotorCommands.from_positions(
-            {"FR_hip": 0.1, "FR_thigh": 0.2},
-            kp=25.0,
-            kd=0.8,
-        )
-
-        assert cmd.positions == {"FR_hip": 0.1, "FR_thigh": 0.2}
-        assert cmd.kp == 25.0
-        assert cmd.kd == 0.8
-
-    def test_motor_commands_from_velocities(self) -> None:
-        """Test creating from velocities factory."""
-        cmd = MotorCommands.from_velocities(
-            {"FR_hip": 1.0, "FL_hip": -1.0},
-            kd=2.0,
-        )
-
-        assert cmd.velocities == {"FR_hip": 1.0, "FL_hip": -1.0}
-        assert cmd.kd == 2.0
-
-    def test_motor_commands_from_torques(self) -> None:
-        """Test creating from torques factory."""
-        cmd = MotorCommands.from_torques({"FR_hip": 5.0, "FL_hip": 5.0})
-
-        assert cmd.torques == {"FR_hip": 5.0, "FL_hip": 5.0}
-
-    def test_motor_commands_repr_empty(self) -> None:
-        """Test repr for empty commands."""
-        cmd = MotorCommands()
-        repr_str = repr(cmd)
-
-        assert "MotorCommands()" in repr_str
-
-    def test_motor_commands_repr_with_positions(self) -> None:
-        """Test repr with positions."""
-        cmd = MotorCommands(positions={"FR_hip": 0.5})
-        repr_str = repr(cmd)
-
-        assert "MotorCommands(" in repr_str
-        assert "positions=" in repr_str
-        assert "FR_hip" in repr_str
+        assert cmd.config is config
 
 
-class TestMotorCommandsToArray:
-    """Tests for MotorCommands.to_array() method."""
+class TestMotorCommandsToTensor:
 
-    def test_to_array_empty(self) -> None:
-        """Test converting empty commands to array."""
-        cmd = MotorCommands()
-        arr = cmd.to_array()
+    def test_to_tensor_basic(self) -> None:
+        config = _make_config(SO101_JOINTS)
+        cmd = MotorCommands({"gripper": 0.8, "elbow": -0.3}, config=config)
+        t = cmd.to_tensor()
 
-        assert arr == [0.0] * 12
+        assert t.shape == (1, 64)
+        assert t[0, 5].item() == pytest.approx(0.8)  # gripper at index 5
+        assert t[0, 2].item() == pytest.approx(-0.3)  # elbow at index 2
+        assert t[0, 0].item() == pytest.approx(0.0)  # shoulder_pan untouched
 
-    def test_to_array_custom_size(self) -> None:
-        """Test converting with custom motor count."""
-        cmd = MotorCommands()
-        arr = cmd.to_array(num_motors=6)
+    def test_to_tensor_batch(self) -> None:
+        config = _make_config(SO101_JOINTS)
+        cmd = MotorCommands({"gripper": 1.0}, config=config)
+        t = cmd.to_tensor(batch_size=4)
 
-        assert len(arr) == 6
-        assert arr == [0.0] * 6
+        assert t.shape == (4, 64)
+        assert t[3, 5].item() == pytest.approx(1.0)
 
-    def test_to_array_with_positions(self) -> None:
-        """Test converting positions to array."""
-        # Note: This test depends on motor_index_by_name from the Rust bindings
-        # We're testing the Python logic here, actual index lookup requires bindings
-        cmd = MotorCommands(positions={"FR_hip": 0.5})
-        arr = cmd.to_array()
+    def test_to_tensor_unknown_joint_raises(self) -> None:
+        config = _make_config(SO101_JOINTS)
+        cmd = MotorCommands({"nonexistent": 0.5}, config=config)
 
-        # FR_hip should be at index 0
-        assert len(arr) == 12
-        # The actual value depends on motor_index_by_name working
+        with pytest.raises(ValueError, match="nonexistent"):
+            cmd.to_tensor()
+
+    def test_to_tensor_no_config_raises(self) -> None:
+        cmd = MotorCommands({"gripper": 0.5})
+
+        with pytest.raises(ValueError, match="requires a config"):
+            cmd.to_tensor()
 
 
-class TestMotorCommandsCombined:
-    """Tests for using multiple command types together."""
+class TestMotorCommandsToList:
 
-    def test_combined_commands(self) -> None:
-        """Test combining positions, velocities, and torques."""
-        cmd = MotorCommands(
-            positions={"FR_hip": 0.5},
-            velocities={"FL_hip": 1.0},
-            torques={"RR_hip": 2.0},
-        )
+    def test_to_list_basic(self) -> None:
+        config = _make_config(SO101_JOINTS)
+        cmd = MotorCommands({"gripper": 0.8, "elbow": -0.3}, config=config)
+        result = cmd.to_list()
 
-        assert cmd.positions == {"FR_hip": 0.5}
-        assert cmd.velocities == {"FL_hip": 1.0}
-        assert cmd.torques == {"RR_hip": 2.0}
+        assert len(result) == 6
+        assert result[5] == pytest.approx(0.8)
+        assert result[2] == pytest.approx(-0.3)
+        assert result[0] == pytest.approx(0.0)
 
-    def test_repr_combined(self) -> None:
-        """Test repr with multiple types."""
-        cmd = MotorCommands(
-            positions={"FR_hip": 0.5},
-            velocities={"FL_hip": 1.0},
-        )
-        repr_str = repr(cmd)
+    def test_to_list_no_config_raises(self) -> None:
+        cmd = MotorCommands({"gripper": 0.5})
 
-        assert "positions=" in repr_str
-        assert "velocities=" in repr_str
+        with pytest.raises(ValueError, match="requires a config"):
+            cmd.to_list()

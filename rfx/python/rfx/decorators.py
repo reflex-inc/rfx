@@ -1,203 +1,173 @@
 """
-Decorators for control loops and neural policies.
+rfx.decorators - @policy decorator and MotorCommands.
 
-Provides decorators for defining control loops and tinygrad-based neural policies.
+@policy marks a function as deployable by `rfx deploy my_file.py`.
+MotorCommands lets you build actions from named joints instead of raw indices.
+
+Example:
+    # my_policy.py
+    import rfx
+
+    @rfx.policy
+    def hold(obs):
+        return rfx.MotorCommands({"gripper": 0.8}, config=rfx.SO101_CONFIG).to_tensor()
+
+    # Then:
+    #   rfx deploy my_policy.py --robot so101
 """
 
 from __future__ import annotations
 
 import functools
 from collections.abc import Callable
-from typing import Any, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any
 
-from .jit import PolicyJitRuntime
+if TYPE_CHECKING:
+    import torch
 
-P = ParamSpec("P")
-R = TypeVar("R")
-
-try:
-    from tinygrad.engine.jit import TinyJit
-
-    TINYGRAD_AVAILABLE = True
-except ImportError:
-
-    def TinyJit(x):
-        return x  # no-op if tinygrad not available
-
-    TINYGRAD_AVAILABLE = False
+    from .robot.config import RobotConfig
 
 
-def control_loop(
-    rate_hz: float = 500.0,
-    name: str | None = None,
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """
-    Decorator to mark a function as a control loop callback.
+def policy(fn: Callable | None = None) -> Callable:
+    """Mark a function as an rfx policy.
 
-    The decorated function should accept (state) and return a command.
-    The loop will run at the specified rate.
+    A policy is any callable: ``Dict[str, Tensor] -> Tensor``.
+    This decorator stamps ``_rfx_policy = True`` so that
+    ``rfx deploy my_file.py`` can discover it automatically.
+
+    Can be used with or without parentheses::
+
+        @rfx.policy
+        def my_policy(obs):
+            return model(obs["state"])
+
+        @rfx.policy()
+        def my_policy(obs):
+            return model(obs["state"])
 
     Args:
-        rate_hz: Target loop rate in Hz (default: 500)
-        name: Optional name for the loop
+        fn: The function to decorate (when used without parentheses).
 
-    Example:
-        >>> @rfx.control_loop(rate_hz=500)
-        >>> def balance_policy(state: rfx.Go2State) -> rfx.MotorCommands:
-        ...     roll_error = state.imu.roll
-        ...     return rfx.MotorCommands.from_positions({
-        ...         "FL_hip": -0.5 * roll_error,
-        ...         "FR_hip": -0.5 * roll_error,
-        ...     })
-        >>>
-        >>> go2.run(balance_policy, timeout=30.0)
+    Returns:
+        The decorated function, unchanged except for the ``_rfx_policy`` marker.
     """
+    if fn is None:
+        # Called as @policy() with parens
+        return policy
 
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        @functools.wraps(func)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            return func(*args, **kwargs)
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
 
-        wrapper._rfx_control_loop = True  # type: ignore[attr-defined]
-        wrapper._rfx_rate_hz = rate_hz  # type: ignore[attr-defined]
-        wrapper._rfx_name = name or func.__name__  # type: ignore[attr-defined]
-
-        return wrapper  # type: ignore[return-value]
-
-    return decorator
-
-
-def policy(
-    model: str | None = None,
-    jit: bool = False,
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """
-    Decorator to mark a function as a neural policy.
-
-    When jit=True, the function will be JIT compiled using tinygrad's TinyJit.
-    If `RFX_JIT=1`, NumPy tensor calls are routed through `rfxJIT`.
-
-    Args:
-        model: Optional model path. If provided, raises NotImplementedError at runtime.
-        jit: Whether to JIT compile the policy (default: False)
-
-    Example:
-        >>> from tinygrad import Tensor
-        >>> import rfx
-        >>>
-        >>> @rfx.policy(jit=True)
-        >>> def walking_policy(obs: Tensor) -> Tensor:
-        ...     return obs @ weights
-    """
-
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        runtime = None  # type: PolicyJitRuntime | None
-
-        if model is not None:
-
-            @functools.wraps(func)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                raise NotImplementedError(
-                    "Neural network policies from model files are not implemented yet."
-                )
-        elif jit:
-            if TINYGRAD_AVAILABLE:
-                fallback = TinyJit(func)
-            else:
-                fallback = func
-
-            runtime = PolicyJitRuntime(
-                func,
-                fallback=fallback,
-                name=func.__name__,
-            )
-
-            @functools.wraps(func)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                return runtime(*args, **kwargs)
-        else:
-
-            @functools.wraps(func)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                return func(*args, **kwargs)
-
-        wrapper._rfx_policy = True  # type: ignore[attr-defined]
-        wrapper._rfx_jit = jit  # type: ignore[attr-defined]
-        wrapper._rfx_model = model  # type: ignore[attr-defined]
-        wrapper._rfx_jit_backend = runtime.backend if runtime is not None else "disabled"  # type: ignore[attr-defined]
-        wrapper._rfx_jit_runtime = runtime  # type: ignore[attr-defined]
-
-        return wrapper  # type: ignore[return-value]
-
-    return decorator
+    wrapper._rfx_policy = True  # type: ignore[attr-defined]
+    return wrapper
 
 
 class MotorCommands:
-    """
-    Motor commands to send to the robot.
+    """Build action tensors from named joint positions.
 
-    A convenience class for constructing motor command arrays from
-    named positions, velocities, or torques.
+    Instead of writing ``action[0, 5] = 0.8`` and hoping index 5 is the gripper,
+    use joint names from the robot config::
+
+        cmd = MotorCommands({"gripper": 0.8, "elbow": -0.3}, config=SO101_CONFIG)
+        action = cmd.to_tensor()  # shape: (1, max_action_dim)
+
+    Works with any robot — resolves joint names from the config's joint list.
+
+    Args:
+        positions: Dict mapping joint name to target position.
+        config: RobotConfig with joints list. Required for to_tensor().
+        kp: Position gain (for backends that use it).
+        kd: Damping gain (for backends that use it).
     """
 
     def __init__(
         self,
         positions: dict[str, float] | None = None,
-        velocities: dict[str, float] | None = None,
-        torques: dict[str, float] | None = None,
+        *,
+        config: RobotConfig | None = None,
         kp: float = 20.0,
         kd: float = 0.5,
     ) -> None:
         self.positions = positions or {}
-        self.velocities = velocities or {}
-        self.torques = torques or {}
+        self.config = config
         self.kp = kp
         self.kd = kd
+
+    def to_tensor(self, batch_size: int = 1) -> torch.Tensor:
+        """Convert named positions to a padded action tensor.
+
+        Returns a tensor of shape ``(batch_size, max_action_dim)`` with joint
+        positions placed at the correct indices from the robot config.
+
+        Args:
+            batch_size: Leading batch dimension (default: 1).
+
+        Returns:
+            Action tensor ready to pass to ``robot.act()``.
+
+        Raises:
+            ValueError: If config is not set or a joint name is not found.
+        """
+        import torch
+
+        if self.config is None:
+            raise ValueError(
+                "MotorCommands.to_tensor() requires a config. Pass config= to the constructor."
+            )
+
+        joint_map = {j.name: j.index for j in self.config.joints}
+        action = torch.zeros(batch_size, self.config.max_action_dim)
+
+        for name, value in self.positions.items():
+            if name not in joint_map:
+                available = ", ".join(sorted(joint_map.keys()))
+                raise ValueError(
+                    f"Joint '{name}' not found in {self.config.name} config. Available: {available}"
+                )
+            action[:, joint_map[name]] = value
+
+        return action
+
+    def to_list(self) -> list[float]:
+        """Convert to a flat position list using config joint ordering.
+
+        Returns a list of length ``action_dim`` with positions at the correct
+        indices. Joints not specified default to 0.0.
+
+        Raises:
+            ValueError: If config is not set.
+        """
+        if self.config is None:
+            raise ValueError(
+                "MotorCommands.to_list() requires a config. Pass config= to the constructor."
+            )
+
+        joint_map = {j.name: j.index for j in self.config.joints}
+        result = [0.0] * self.config.action_dim
+
+        for name, value in self.positions.items():
+            if name in joint_map:
+                idx = joint_map[name]
+                if idx < len(result):
+                    result[idx] = value
+
+        return result
 
     @classmethod
     def from_positions(
         cls,
         positions: dict[str, float],
+        config: RobotConfig | None = None,
         kp: float = 20.0,
         kd: float = 0.5,
     ) -> MotorCommands:
         """Create commands from named positions."""
-        return cls(positions=positions, kp=kp, kd=kd)
-
-    @classmethod
-    def from_velocities(
-        cls,
-        velocities: dict[str, float],
-        kd: float = 0.5,
-    ) -> MotorCommands:
-        """Create commands from named velocities."""
-        return cls(velocities=velocities, kd=kd)
-
-    @classmethod
-    def from_torques(
-        cls,
-        torques: dict[str, float],
-    ) -> MotorCommands:
-        """Create commands from named torques."""
-        return cls(torques=torques)
-
-    def to_array(self, num_motors: int = 12) -> list[float]:
-        """Convert to position array."""
-        from . import motor_index_by_name
-
-        result = [0.0] * num_motors
-        for name, value in self.positions.items():
-            idx = motor_index_by_name(name)
-            if idx is not None:
-                result[idx] = value
-        return result
+        return cls(positions=positions, config=config, kp=kp, kd=kd)
 
     def __repr__(self) -> str:
-        parts = []
+        config_name = self.config.name if self.config else "no config"
         if self.positions:
-            parts.append(f"positions={self.positions}")
-        if self.velocities:
-            parts.append(f"velocities={self.velocities}")
-        if self.torques:
-            parts.append(f"torques={self.torques}")
-        return f"MotorCommands({', '.join(parts)})"
+            joints = ", ".join(f"{k}={v:.2f}" for k, v in self.positions.items())
+            return f"MotorCommands({joints}, config={config_name})"
+        return f"MotorCommands(empty, config={config_name})"

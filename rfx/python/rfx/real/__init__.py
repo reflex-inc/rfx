@@ -5,9 +5,17 @@ Same interface as simulation - no ROS, no middleware.
 """
 
 from .base import RealRobot
-from .g1 import G1Robot
-from .go2 import Go2Robot
 from .so101 import So101Robot
+
+try:
+    from .go2 import Go2Robot
+except ModuleNotFoundError:
+    Go2Robot = None
+
+try:
+    from .g1 import G1Robot
+except ModuleNotFoundError:
+    G1Robot = None
 
 try:
     from .camera import Camera, RealSenseCamera
