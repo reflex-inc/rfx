@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
-import rfx.real.so101 as so101_mod
+import pytest
+
+TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
+pytestmark = pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch is required")
+
+if TORCH_AVAILABLE:
+    import rfx.real.so101 as so101_mod
 
 
 def test_auto_pair_persists_identity_across_port_renumber(monkeypatch, tmp_path: Path) -> None:
