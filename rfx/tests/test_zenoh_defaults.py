@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 
@@ -162,6 +164,7 @@ def test_auto_transport_shared_memory_env(monkeypatch) -> None:
     assert captured["shared_memory"] is False
 
 
+@pytest.mark.skipif(not importlib.util.find_spec("torch"), reason="torch is required")
 def test_go2_dds_backend_deprecation_warning() -> None:
     """Using dds_backend= should emit FutureWarning."""
     import warnings

@@ -7,7 +7,7 @@ name = "rfx-sdk-lerobot"
 version = "0.2.0"
 description = "LeRobot integration package for rfx"
 requires-python = ">=3.13"
-dependencies = ["rfx-sdk>=0.2.0", "lerobot"]
+dependencies = ["rfx-sdk[collection]>=0.2.0"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

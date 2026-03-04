@@ -1,5 +1,8 @@
 """Tests for rfx.decorators module."""
 
+from __future__ import annotations
+
+import importlib.util
 from typing import Any
 
 import pytest
@@ -7,13 +10,14 @@ import pytest
 from rfx.decorators import MotorCommands, policy
 from rfx.robot.config import JointConfig, RobotConfig
 
+TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
+
 # ---------------------------------------------------------------------------
 # @policy decorator
 # ---------------------------------------------------------------------------
 
 
 class TestPolicyDecorator:
-
     def test_policy_bare(self) -> None:
         """@rfx.policy without parentheses."""
 
@@ -83,7 +87,6 @@ SO101_JOINTS = [
 
 
 class TestMotorCommands:
-
     def test_empty(self) -> None:
         cmd = MotorCommands()
         assert cmd.positions == {}
@@ -111,8 +114,8 @@ class TestMotorCommands:
         assert cmd.config is config
 
 
+@pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch is required")
 class TestMotorCommandsToTensor:
-
     def test_to_tensor_basic(self) -> None:
         config = _make_config(SO101_JOINTS)
         cmd = MotorCommands({"gripper": 0.8, "elbow": -0.3}, config=config)
@@ -146,7 +149,6 @@ class TestMotorCommandsToTensor:
 
 
 class TestMotorCommandsToList:
-
     def test_to_list_basic(self) -> None:
         config = _make_config(SO101_JOINTS)
         cmd = MotorCommands({"gripper": 0.8, "elbow": -0.3}, config=config)
