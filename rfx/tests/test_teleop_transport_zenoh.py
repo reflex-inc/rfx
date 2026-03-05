@@ -146,7 +146,10 @@ def test_create_transport_zenoh_with_custom_config(monkeypatch) -> None:
 )
 def test_zenoh_roundtrip_integration() -> None:
     """Full pub/sub roundtrip through the real Zenoh backend."""
-    transport = transport_mod.ZenohTransport()
+    try:
+        transport = transport_mod.ZenohTransport()
+    except RuntimeError as exc:
+        pytest.skip(f"Zenoh runtime unavailable in test environment: {exc}")
     sub = transport.subscribe("integration/test/**")
     transport.publish(
         "integration/test/hello",

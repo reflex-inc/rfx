@@ -1,8 +1,17 @@
 """Pytest configuration and shared fixtures."""
 
+import os
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
+
+# Set cache env vars before test modules import tinygrad.
+_CACHE_ROOT = Path(tempfile.gettempdir()) / "rfx_pytest_cache"
+_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("XDG_CACHE_HOME", str(_CACHE_ROOT))
+os.environ.setdefault("CACHELEVEL", "0")
 
 # ---------------------------------------------------------------------------
 # Environment isolation (autouse)

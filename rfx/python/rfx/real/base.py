@@ -56,6 +56,8 @@ class RealRobot(RobotBase):
             return "g1"
         elif "go2" in name:
             return "go2"
+        elif "innate" in name:
+            return "innate"
         else:
             raise ValueError(f"Cannot detect robot type from: {self._config.name}")
 
@@ -72,6 +74,10 @@ class RealRobot(RobotBase):
             from .g1 import G1Backend
 
             return G1Backend(config=self._config, **hardware_config)
+        elif robot_type == "innate":
+            from .innate import InnateBackend
+
+            return InnateBackend(config=self._config, **hardware_config)
         else:
             # Fallback to driver registry
             try:

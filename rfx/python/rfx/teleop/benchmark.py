@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from .config import TeleopSessionConfig
+from .config import TeleopSessionConfig, TransportConfig
 from .session import BimanualSo101Session, LoopTimingStats
 
 
@@ -68,6 +68,7 @@ def run_jitter_benchmark(
         rate_hz=rate_hz,
         cameras=(),
         max_timing_samples=max_timing_samples,
+        transport=TransportConfig(backend="inproc", zero_copy_hot_path=False),
     )
     session = BimanualSo101Session(
         config=config,

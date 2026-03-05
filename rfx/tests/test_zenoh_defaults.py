@@ -87,6 +87,7 @@ def test_teleop_config_zenoh_default_in_session() -> None:
 
 def test_auto_transport_reads_env_connect(monkeypatch) -> None:
     """auto_transport should parse RFX_ZENOH_CONNECT env var."""
+    pytest.importorskip("rfx._rfx", reason="Rust extension not built")
     import rfx.node as node_mod
 
     monkeypatch.setenv("RFX_ZENOH_CONNECT", "tcp/10.0.0.1:7447,tcp/10.0.0.2:7447")
@@ -118,6 +119,7 @@ def test_auto_transport_reads_env_connect(monkeypatch) -> None:
 
 def test_auto_transport_explicit_overrides_env(monkeypatch) -> None:
     """Explicit connect= arg must override RFX_ZENOH_CONNECT."""
+    pytest.importorskip("rfx._rfx", reason="Rust extension not built")
     import rfx.node as node_mod
 
     monkeypatch.setenv("RFX_ZENOH_CONNECT", "tcp/env:7447")
@@ -142,6 +144,7 @@ def test_auto_transport_explicit_overrides_env(monkeypatch) -> None:
 
 def test_auto_transport_shared_memory_env(monkeypatch) -> None:
     """RFX_ZENOH_SHARED_MEMORY=0 should disable shared memory."""
+    pytest.importorskip("rfx._rfx", reason="Rust extension not built")
     import rfx.node as node_mod
 
     monkeypatch.setenv("RFX_ZENOH_SHARED_MEMORY", "0")

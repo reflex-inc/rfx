@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .hub import LoadedPolicy, load_policy
-from .robot.config import GO2_CONFIG, SO101_CONFIG, G1_CONFIG, RobotConfig
+from .robot.config import GO2_CONFIG, SO101_CONFIG, G1_CONFIG, INNATE_CONFIG, RobotConfig
 from .session import Session, SessionStats
 
 # Robot type -> built-in config
@@ -32,6 +32,7 @@ _BUILTIN_CONFIGS: dict[str, RobotConfig] = {
     "so101": SO101_CONFIG,
     "go2": GO2_CONFIG,
     "g1": G1_CONFIG,
+    "innate": INNATE_CONFIG,
 }
 
 

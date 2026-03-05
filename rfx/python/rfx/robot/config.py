@@ -210,3 +210,27 @@ G1_CONFIG = RobotConfig(
         "ip_address": "192.168.123.161",
     },
 )
+
+# Innate bot: 5-8 joint general manipulation arm via Zenoh
+# Topic names are configurable — these are defaults.
+INNATE_CONFIG = RobotConfig(
+    name="Innate",
+    state_dim=12,  # 6 positions + 6 velocities
+    action_dim=6,  # 6 joint targets
+    max_state_dim=64,
+    max_action_dim=64,
+    control_freq_hz=50,
+    joints=[
+        JointConfig(name="joint_0", index=0),
+        JointConfig(name="joint_1", index=1),
+        JointConfig(name="joint_2", index=2),
+        JointConfig(name="joint_3", index=3),
+        JointConfig(name="joint_4", index=4),
+        JointConfig(name="joint_5", index=5),
+    ],
+    hardware={
+        "zenoh_state_topic": "innate/joint_states",
+        "zenoh_cmd_topic": "innate/joint_commands",
+        "msg_format": "json",
+    },
+)

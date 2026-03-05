@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
-
 import pytest
 
 
 def test_native_transport_binding_if_available() -> None:
-    rfx_ext = importlib.import_module("rfx._rfx")
+    rfx_ext = pytest.importorskip("rfx._rfx", reason="Rust extension not built")
     if not hasattr(rfx_ext, "Transport"):
         pytest.skip("native Transport binding unavailable in current extension build")
 

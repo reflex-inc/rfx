@@ -197,7 +197,7 @@ class TestDeployMock:
         )
 
         # Monkeypatch load_policy to return our mock
-        import rfx.deploy as deploy_mod
+        deploy_mod = importlib.import_module("rfx.deploy")
 
         original_load = deploy_mod.load_policy
         deploy_mod.load_policy = lambda _src: loaded

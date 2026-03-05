@@ -32,6 +32,7 @@ def test_session_collects_timing_stats_and_records_episode(tmp_path: Path) -> No
         output_dir=tmp_path,
         rate_hz=200.0,
         cameras=(),
+        transport=TransportConfig(backend="inproc", zero_copy_hot_path=False),
     )
     recorder = LeRobotRecorder(tmp_path)
     session = BimanualSo101Session(
