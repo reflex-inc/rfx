@@ -2,8 +2,9 @@
 
 ## Design Goals
 
-- One simple Python API for users.
+- One simple Python API for AI robotics workloads.
 - Three methods per robot: `observe()`, `act()`, `reset()`.
+- Simulation and collection are first-class SDK surfaces.
 - Every saved model is self-describing: load and deploy with zero context.
 - HuggingFace Hub native: push and pull policies like datasets.
 
@@ -24,11 +25,12 @@ uv add rfx-sdk
 ```python
 import rfx
 
-# Deploy a policy (one line)
-rfx.deploy("runs/my-policy", robot="so101")
+# Sim and mock use the same robot contract as real hardware.
+robot = rfx.MockRobot(state_dim=12, action_dim=6)
+obs = robot.observe()
 
-# Or from Hub
-rfx.deploy("hf://rfx-community/go2-walk-v1", robot="go2", duration=30)
+# Deploy a policy
+rfx.deploy("runs/my-policy", robot="so101")
 ```
 
 ## The Robot Interface
@@ -48,6 +50,21 @@ robot = rfx.SimRobot.from_config("so101.yaml", backend="genesis", viewer=True)
 robot = rfx.MockRobot(state_dim=12, action_dim=6)   # zero deps, for testing
 robot = rfx.RealRobot(rfx.SO101_CONFIG)              # real hardware
 ```
+
+## Collection
+
+Collection is a primitive in the SDK:
+
+```python
+dataset = rfx.collection.collect(
+    "so101",
+    "my-org/demos",
+    episodes=2,
+    duration_s=10,
+)
+```
+
+The collection API records observations through the same robot interface used by deployment and simulation.
 
 ## Write a Policy
 
@@ -189,10 +206,10 @@ rfx.G1_CONFIG      # 29 DOF humanoid, 50 Hz
 ```
 rfx/python/rfx/
 ├── robot/          # Robot protocol, config, URDF
-├── collection/     # Dataset recording, hub integration
+├── collection/     # Collection and dataset contracts
 ├── real/           # Real hardware backends (SO-101, Go2, G1)
 ├── sim/            # Simulation backends (MuJoCo, Genesis, mock)
-├── runtime/        # CLI
+├── runtime/        # Lifecycle, CLI, health, runtime helpers
 ├── hub.py          # Model save/load/push (HuggingFace Hub)
 ├── session.py      # Rate-controlled control loop
 ├── deploy.py       # rfx.deploy() implementation

@@ -1,38 +1,38 @@
 # Core Primitives
 
-rfx organizes its API into focused package surfaces:
+`rfx` organizes its API into focused package surfaces for AI-native robotics middleware:
 
-- `rfx.robot` — Robot protocol, config, URDF, factory functions
-- `rfx.teleop` — Teleoperation sessions, transport, recording
-- `rfx.collection` — Dataset recording and hub operations
-- `rfx.runtime` — CLI, lifecycle, health, otel
-- `rfx.sim` — Simulation backends
+- `rfx.robot` — robot contract, config, discovery, and hardware-facing abstractions
+- `rfx.sim` — simulation and mock execution surfaces
+- `rfx.collection` — dataset recording and collection contracts
+- `rfx.runtime` — lifecycle, health, CLI, and operational runtime helpers
+- `rfx.teleop` — teleoperation and high-rate recording flows built on the same primitives
 
 ## Intent
 
-- Keep teleop/session concerns isolated.
-- Keep robot/hardware and discovery concerns isolated.
-- Keep runtime/operations concerns isolated.
-- Keep simulation as a separate package surface.
+- Keep the middleware core small and explicit.
+- Treat simulation as a primitive, not an afterthought.
+- Treat collection as a primitive, not a script on the side.
+- Keep robot adapters separate from framework identity.
+- Let workflow helpers compose on top of the primitives instead of defining them.
 
 ## Usage
 
 ```python
-from rfx.robot import lerobot
-from rfx.teleop import run
+import rfx
 
-arm = lerobot.so101()
-run(arm, logging=True)
+robot = rfx.MockRobot(state_dim=12, action_dim=6)
+obs = robot.observe()
 ```
 
-Or access modules directly:
+Or access the package surfaces directly:
 
 ```python
 import rfx
 
-rfx.robot      # Robot protocol, config, URDF
-rfx.teleop     # Teleop sessions, transport
-rfx.collection # Data collection + dataset APIs
-rfx.runtime    # CLI, lifecycle
-rfx.sim        # Simulation backends
+rfx.robot      # Robot protocol, config, discovery
+rfx.sim        # Simulation and mock backends
+rfx.collection # Collection and dataset APIs
+rfx.runtime    # Runtime and operational helpers
+rfx.teleop     # Teleop on top of the same robot/runtime contracts
 ```

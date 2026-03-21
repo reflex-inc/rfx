@@ -1,11 +1,14 @@
 """
-rfx CLI - Three commands. That's it.
+rfx CLI - primary framework commands plus lightweight workflow utilities.
 
-    rfx record   - Record demonstrations from hardware
-    rfx train    - Train a policy from recorded data
-    rfx deploy   - Deploy a trained policy to a robot
+    Primary:
+        rfx record   - Record observations from a robot
+        rfx deploy   - Deploy a trained policy to a robot
+        rfx doctor   - Check your setup
 
-    rfx doctor   - Check your setup
+    Secondary:
+        rfx train    - Register a training-stage artifact
+        rfx runs     - Inspect the lightweight run registry
 """
 
 from __future__ import annotations
@@ -347,7 +350,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     else:
         print("[rfx] Some required items missing. See above.")
 
-    return 0
+    return 0 if (all_ok or not getattr(_args, "strict", False)) else 1
 
 
 # ---------------------------------------------------------------------------
@@ -438,18 +441,9 @@ examples:
         help="record demonstrations from a robot",
         description="Collect teleoperation demos into a LeRobot dataset.",
     )
-    s.add_argument("--robot", required=True, help="robot type (e.g. so101)")
-    s.add_argument("--repo-id", required=True, help="HuggingFace dataset repo ID")
-    s.add_argument("--output", "-o", default="datasets", help="output root directory")
-    s.add_argument("--episodes", "-n", type=int, default=1, help="number of episodes to collect")
-    s.add_argument(
-        "--duration", "-d", type=float, default=None, help="duration per episode in seconds"
-    )
-    s.add_argument("--task", default="default", help="task label for episodes")
-    s.add_argument("--fps", type=int, default=30, help="recording frame rate")
-    s.add_argument("--push", action="store_true", help="push to Hub after collection")
-    s.add_argument("--mcap", action="store_true", help="also log MCAP sidecar")
-    s.add_argument("--state-dim", type=int, default=6, help="state dimension")
+    from rfx.collection._cli import add_collect_args
+
+    add_collect_args(s)
     s.set_defaults(fn=cmd_record)
 
     # --- train ---
@@ -470,6 +464,11 @@ examples:
 
     # --- doctor ---
     s = sp.add_parser("doctor", help="check system setup and dependencies")
+    s.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit non-zero when required dependencies are missing",
+    )
     s.set_defaults(fn=cmd_doctor)
 
     # --- runs ---

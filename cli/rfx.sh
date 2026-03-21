@@ -6,7 +6,7 @@ cd "$ROOT"
 
 usage() {
   cat <<'USAGE'
-Usage: cli/rfx.sh <doctor|doctor-teleop|doctor-so101|so101-demo|so101-bimanual|so101-setup|bootstrap|bootstrap-teleop|setup-source|check|pkg-create|pkg-list|run|launch|graph|topic-list|collect|validate|train|eval|shadow|deploy|runs|lineage|reproduce>
+Usage: cli/rfx.sh <doctor|doctor-teleop|doctor-so101|so101-demo|so101-bimanual|so101-setup|bootstrap|bootstrap-teleop|setup-source|check|record|train|deploy|runs>
 USAGE
 }
 
@@ -109,49 +109,13 @@ main() {
     check)
       check
       ;;
-    pkg-create)
+    record)
       shift
-      runtime_cli pkg-create "$@"
-      ;;
-    pkg-list)
-      shift
-      runtime_cli pkg-list "$@"
-      ;;
-    run)
-      shift
-      runtime_cli run "$@"
-      ;;
-    launch)
-      shift
-      runtime_cli launch "$@"
-      ;;
-    graph)
-      shift
-      runtime_cli graph "$@"
-      ;;
-    topic-list)
-      shift
-      runtime_cli topic-list "$@"
-      ;;
-    collect)
-      shift
-      runtime_cli collect "$@"
-      ;;
-    validate)
-      shift
-      runtime_cli validate "$@"
+      runtime_cli record "$@"
       ;;
     train)
       shift
       runtime_cli train "$@"
-      ;;
-    eval)
-      shift
-      runtime_cli eval "$@"
-      ;;
-    shadow)
-      shift
-      runtime_cli shadow "$@"
       ;;
     deploy)
       shift
@@ -160,14 +124,6 @@ main() {
     runs)
       shift
       runtime_cli runs "$@"
-      ;;
-    lineage)
-      shift
-      runtime_cli lineage "$@"
-      ;;
-    reproduce)
-      shift
-      runtime_cli reproduce "$@"
       ;;
     *)
       usage

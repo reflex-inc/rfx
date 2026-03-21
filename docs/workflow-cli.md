@@ -1,6 +1,14 @@
 # CLI Reference
 
-rfx has three commands. That's it.
+The supported public CLI surface is small:
+
+- `rfx record`
+- `rfx deploy`
+- `rfx doctor`
+
+These commands sit on top of the middleware primitives. In `rfx`, simulation and collection are part of the framework contract, not optional side workflows.
+
+There are additional workflow utilities such as `rfx train` and `rfx runs`, but they are secondary to the core SDK/runtime loop.
 
 All commands work with `uv run`:
 
@@ -20,23 +28,30 @@ rfx doctor
 
 ## `rfx record`
 
-Collect teleoperation demonstrations into a LeRobot dataset.
+Collect robot observations into a LeRobot dataset.
 
 ```bash
-rfx record --robot so101 --repo-id my-org/demos --episodes 10
-rfx record --robot so101 --repo-id demos --episodes 5 --duration 30 --fps 30
-rfx record --robot go2 --repo-id demos --push  # push to Hub after recording
+rfx record --robot so101 --repo-id my-org/demos --episodes 10 --duration 30
+rfx record --robot so101 --repo-id demos --duration 15 --fps 30 --port /dev/ttyACM0
+rfx record --robot so101 --repo-id demos --mock --duration 5
+rfx record --robot go2 --repo-id demos --duration 20 --push
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--robot` | required | Robot type (`so101`, `go2`, `g1`) |
 | `--repo-id` | required | Dataset name or HuggingFace repo ID |
-| `--episodes` | `10` | Number of episodes to record |
-| `--duration` | `60` | Max seconds per episode |
+| `--episodes` | `1` | Number of episodes to record |
+| `--duration` | interactive | Episode duration in seconds. Omit to stop with Ctrl+C. |
 | `--fps` | `30` | Recording frame rate |
+| `--rate-hz` | `fps` | Sampling rate override for `robot.observe()` |
+| `--config` | none | Robot YAML config override |
+| `--port` | auto | Serial port or IP override |
+| `--camera-id` | config | Camera device id override (repeatable) |
+| `--mock` | `false` | Use `MockRobot` for dry-run recording |
 | `--push` | `false` | Push dataset to HuggingFace Hub after recording |
-| `--state-dim` | auto | Override state dimension |
+| `--mcap` | `false` | Write MCAP sidecar alongside dataset |
+| `--state-dim` | config | Override state dimension |
 
 ## `rfx deploy`
 
@@ -79,9 +94,12 @@ Check your environment.
 
 ```bash
 rfx doctor
+rfx doctor --strict
 ```
 
-Checks: Python version, cargo, uv, core imports (torch, numpy, yaml), Rust extension, serial ports.
+Checks: Python version, cargo, uv, core imports, Rust extension, simulation backends, rfxJIT backends, serial ports.
+
+Use `--strict` to make missing required dependencies fail with a non-zero exit code.
 
 ## Python API
 
@@ -98,6 +116,10 @@ stats = rfx.deploy("runs/my-policy", robot="so101")
 stats = rfx.deploy("hf://user/policy", robot="go2", duration=30)
 stats = rfx.deploy("my_policy.py", robot="so101")
 ```
+
+## Secondary Commands
+
+`rfx train` and `rfx runs` remain available for lightweight workflow metadata and artifact lineage.
 
 ## Run Registry
 

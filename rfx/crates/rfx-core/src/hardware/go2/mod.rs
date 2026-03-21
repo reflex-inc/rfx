@@ -54,7 +54,7 @@ use parking_lot::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{motor_idx::NUM_MOTORS, Command, Robot, RobotState};
 use crate::comm::Receiver;
@@ -330,20 +330,10 @@ impl Go2 {
             thread::sleep(Duration::from_millis(50));
         }
 
-        // Connection established via DDS, even if no state received yet
-        connected.store(true, Ordering::Relaxed);
-        tracing::info!(
-            "Connected to Go2 at {} (waiting for state)",
-            config.ip_address
-        );
-
-        Ok(Self {
-            config,
-            state,
-            backend,
-            connected,
-            start_time,
-        })
+        Err(Error::Timeout(format!(
+            "Timed out waiting for initial Go2 state from {} after {:?}",
+            config.ip_address, timeout
+        )))
     }
 
     /// Connect with async support
@@ -380,6 +370,10 @@ impl Go2 {
                     s.battery = low_state.bms_state;
                     s.motors = motors;
                     s.foot_contact = foot_contact;
+                    s.timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_secs_f64())
+                        .unwrap_or(0.0);
                 }
                 Ok(None) => {
                     // Timeout, continue loop

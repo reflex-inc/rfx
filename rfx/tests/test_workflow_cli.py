@@ -98,18 +98,34 @@ def test_record_parser_accepts_all_flags() -> None:
         "--episodes", "5",
         "--duration", "30",
         "--fps", "60",
+        "--rate-hz", "20",
+        "--config", "robots/so101.yaml",
+        "--port", "/dev/ttyACM0",
+        "--camera-id", "0",
         "--push",
         "--mcap",
+        "--mock",
     ])
     assert ns.robot == "so101"
     assert ns.repo_id == "my-org/demos"
     assert ns.episodes == 5
     assert ns.duration == 30.0
     assert ns.fps == 60
+    assert ns.rate_hz == 20.0
+    assert ns.config == "robots/so101.yaml"
+    assert ns.port == "/dev/ttyACM0"
+    assert ns.camera_id == ["0"]
     assert ns.push is True
     assert ns.mcap is True
+    assert ns.mock is True
 
 
 def test_doctor_runs(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     assert _invoke(["doctor"]) == 0
+
+
+def test_doctor_strict_fails_on_missing_required_tool(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: None if name == "cargo" else "/usr/bin/true")
+    assert _invoke(["doctor", "--strict"]) == 1

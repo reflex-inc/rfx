@@ -1,12 +1,13 @@
 # Docs
 
 - Repository layout: `docs/structure.md`
+- Architecture: `docs/architecture.md`
 - OSS workflow: `docs/workflow.md`
 - Simulation guide: `docs/sim.md`
 - SO101 quickstart: `docs/so101.md`
 - Python SDK: `docs/python-sdk.md`
 - Core primitives (dev): `docs/core-primitives.md`
-- Runtime: `docs/runtime.md`
+- Legacy runtime experiments: `docs/runtime.md`
 - Workflow CLI: `docs/workflow-cli.md`
 - Operator checklist: `docs/operator-checklist.md`
 - PyPI release: `docs/release-pypi.md`

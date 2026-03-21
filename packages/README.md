@@ -1,8 +1,11 @@
 # Extension Packages
 
-This folder contains Python package splits for provider-specific integrations.
-Each package re-exports the relevant subset of the core `rfx-sdk` so users can
-install only what they need.
+This folder contains adapter-oriented package splits for integrations that sit on
+top of the core `rfx-sdk`.
+
+The framework itself is not defined by these packages. They exist so users can
+bring specific robots, simulators, or dataset integrations into an otherwise
+generic middleware/runtime stack.
 
 | Package | Install | Provides |
 |---------|---------|----------|

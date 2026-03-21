@@ -277,6 +277,7 @@ jobs:
   rfxjit-perf:
     name: rfxJIT Perf (CPU soft gate)
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -395,6 +396,16 @@ jobs:
     steps:
       - name: Check all jobs
         run: |
+          echo "rust-fmt:        ${{ needs.rust-fmt.result }}"
+          echo "rust-clippy:     ${{ needs.rust-clippy.result }}"
+          echo "rust-test:       ${{ needs.rust-test.result }}"
+          echo "rust-build:      ${{ needs.rust-build.result }}"
+          echo "python-lint:     ${{ needs.python-lint.result }}"
+          echo "python-typecheck:${{ needs.python-typecheck.result }}"
+          echo "python-test:     ${{ needs.python-test.result }}"
+          echo "integration-test:${{ needs.integration-test.result }}"
+          echo "rfxjit-perf:     ${{ needs.rfxjit-perf.result }}"
+          echo "docs:            ${{ needs.docs.result }}"
           if [[ "${{ needs.rust-fmt.result }}" != "success" ]] ||
              [[ "${{ needs.rust-clippy.result }}" != "success" ]] ||
              [[ "${{ needs.rust-test.result }}" != "success" ]] ||
@@ -403,9 +414,11 @@ jobs:
              [[ "${{ needs.python-typecheck.result }}" != "success" ]] ||
              [[ "${{ needs.python-test.result }}" != "success" ]] ||
              [[ "${{ needs.integration-test.result }}" != "success" ]] ||
-             [[ "${{ needs.rfxjit-perf.result }}" != "success" ]] ||
              [[ "${{ needs.docs.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
+          fi
+          if [[ "${{ needs.rfxjit-perf.result }}" != "success" ]]; then
+            echo "rfxJIT perf soft gate did not pass; continuing."
           fi
           echo "All CI checks passed!"

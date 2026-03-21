@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import time
 from pathlib import Path
 from typing import Any
 
@@ -21,53 +20,46 @@ def add_collect_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--task", default="default", help="task label for episodes")
     parser.add_argument("--fps", type=int, default=30, help="recording frame rate")
+    parser.add_argument("--rate-hz", type=float, default=None, help="sampling rate override")
+    parser.add_argument("--config", default=None, help="path to robot YAML config")
+    parser.add_argument("--port", default=None, help="serial port or IP override")
+    parser.add_argument(
+        "--camera-id",
+        action="append",
+        default=[],
+        help="camera device id (repeatable, overrides config cameras)",
+    )
+    parser.add_argument("--mock", action="store_true", help="use MockRobot for dry-run recording")
     parser.add_argument("--push", action="store_true", help="push to Hub after collection")
     parser.add_argument("--mcap", action="store_true", help="also log MCAP sidecar")
-    parser.add_argument("--state-dim", type=int, default=6, help="state dimension")
+    parser.add_argument("--state-dim", type=int, default=None, help="state dimension override")
 
 
 def run_collection(args: argparse.Namespace) -> dict[str, Any]:
     """Execute collection. Called by workflow/stages.py or CLI."""
-    from ._recorder import Recorder
+    from . import collect
 
-    recorder = Recorder.create(
+    dataset = collect(
+        args.robot,
         args.repo_id,
-        root=args.output,
+        output=args.output,
+        episodes=args.episodes,
+        duration_s=args.duration,
+        task=args.task,
         fps=args.fps,
-        robot_type=args.robot,
         state_dim=args.state_dim,
+        config=args.config,
+        port=args.port,
+        rate_hz=args.rate_hz,
+        mock=bool(args.mock),
+        camera_ids=list(args.camera_id),
+        push_to_hub=bool(args.push),
         mcap=args.mcap,
     )
 
-    total_frames = 0
-    for ep in range(args.episodes):
-        recorder.start_episode(task=args.task)
-        print(f"[rfx] Recording episode {ep + 1}/{args.episodes}...")
-
-        if args.duration is not None:
-            deadline = time.perf_counter() + args.duration
-            while time.perf_counter() < deadline:
-                time.sleep(0.01)
-        else:
-            print("[rfx] Press Ctrl+C to finish episode.")
-            try:
-                while True:
-                    time.sleep(0.1)
-            except KeyboardInterrupt:
-                pass
-
-        count = recorder.save_episode()
-        total_frames += count
-        print(f"[rfx] Episode {ep + 1} saved: {count} frames")
-
-    if args.push:
-        print("[rfx] Pushing to Hub...")
-        recorder.push()
-        print(f"[rfx] Pushed to https://huggingface.co/datasets/{args.repo_id}")
-
     return {
         "repo_id": args.repo_id,
-        "episodes": args.episodes,
-        "total_frames": total_frames,
+        "episodes": int(dataset.num_episodes),
+        "total_frames": int(dataset.num_frames),
         "root": str(Path(args.output).resolve()),
     }

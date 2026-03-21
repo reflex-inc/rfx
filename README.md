@@ -2,7 +2,7 @@
 
 [<img alt="rfx logo" src="docs/assets/logo.svg" width="220" />](https://github.com/quantbagel/rfx)
 
-**The robotics framework for the foundation model era.**
+**AI-native robotics middleware.**
 
 [Documentation](https://deepwiki.com/quantbagel/rfx) | [Discord](https://discord.gg/xV8bAGM8WT)
 
@@ -19,7 +19,7 @@
 uv pip install rfx-sdk
 ```
 
-Three commands. Any robot. Any policy.
+Primary commands for the AI robotics loop.
 
 ```bash
 rfx record --robot so101 --repo-id my-org/demos --episodes 10
@@ -31,13 +31,17 @@ rfx deploy hf://user/my-policy --robot go2 --duration 60
 
 ## Why rfx
 
-ROS was built for message passing between components. We're in a different era -- the workflow is **collect demos, train a policy, deploy, iterate**. rfx is built from scratch for that loop.
+ROS was built around large middleware stacks and traditional robotics pipelines. rfx is narrower: an AI-native middleware for the loop of **simulate, collect, train, deploy, iterate**.
 
-- **Three commands** -- `rfx record`, `rfx deploy`, `rfx doctor` -- that's the whole CLI
+It is not trying to recreate navigation, planning, SLAM, or a full autonomy stack. The goal is a smaller core with:
+
+- **Primary CLI** -- `rfx record`, `rfx deploy`, `rfx doctor`
 - **Three-method robot interface** -- `observe()`, `act()`, `reset()` -- same API for sim and real
+- **Simulation as a primitive** -- sim is a first-class surface, not a plugin bolted onto hardware APIs
+- **Collection as a primitive** -- recording structured observations into datasets is a core contract
 - **Self-describing models** -- save once, load anywhere, deploy with zero config
 - **HuggingFace Hub native** -- push and pull policies like you push datasets
-- **Rust core** for real-time control, Python SDK for fast research
+- **Rust core** for runtime, transport, discovery, and hardware adapters
 - **Zenoh transport** underneath -- invisible plumbing, there when you need it
 
 ## Install
@@ -68,15 +72,16 @@ uv run rfx record --robot so101 --repo-id demos --episodes 10
 
 ## Record demos
 
-Collect teleoperation demonstrations into a LeRobot dataset:
+Collect robot observations into a LeRobot dataset. Collection is a primitive in `rfx`, not a side workflow.
 
 ```bash
-rfx record --robot so101 --repo-id my-org/demos --episodes 10
+rfx record --robot so101 --repo-id my-org/demos --episodes 10 --duration 30
+rfx record --robot so101 --repo-id my-org/demos --mock --duration 5
 ```
 
 ```python
 # Or from Python
-rfx.collection.collect("so101", "my-org/demos", episodes=10)
+rfx.collection.collect("so101", "my-org/demos", episodes=10, duration_s=30)
 ```
 
 ## Deploy a policy
@@ -187,12 +192,23 @@ robot = rfx.SimRobot.from_config("go2.yaml", backend="mjx", num_envs=4096)
 robot = rfx.MockRobot(state_dim=12, action_dim=6)  # zero deps, for testing
 ```
 
+Simulation is part of the framework contract. A policy should move across sim, mock, and real robots through the same observation/action interface.
+
 ## Docs
 
 - [Full documentation](https://deepwiki.com/quantbagel/rfx)
 - [SO-101 quickstart](docs/so101.md)
 - [Simulation guide](docs/sim.md)
 - [Python SDK reference](docs/python-sdk.md)
+- [CLI reference](docs/workflow-cli.md)
+
+## Scope
+
+`rfx` is the framework layer: robot abstraction, simulation, collection, deployment, artifacts, and middleware primitives.
+
+Adapters for specific robots exist to help integration when users already have hardware, but `rfx` is not defined by any one robot family.
+
+Experimental workflow/runtime surfaces may exist in the repository, but the supported public path is the SDK plus the primary CLI above.
 
 ## Community
 

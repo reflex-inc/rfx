@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -281,34 +282,85 @@ class TestHub:
 
 
 # ---------------------------------------------------------------------------
-# __init__ facade tests
+# Collection loop tests
 # ---------------------------------------------------------------------------
-class TestFacade:
-    def test_public_api_imports(self, monkeypatch):
+class _FakeRobot:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+        self.observe_calls = 0
+        self.disconnect_calls = 0
+
+    def reset(self):
+        self.reset_calls += 1
+        return self.observe()
+
+    def observe(self):
+        import torch
+
+        self.observe_calls += 1
+        base = float(self.observe_calls)
+        state = torch.tensor([[base, base + 1.0, base + 2.0]], dtype=torch.float32)
+        return {"state": state}
+
+    def act(self, action):
+        return None
+
+    def disconnect(self):
+        self.disconnect_calls += 1
+
+
+class TestCollect:
+    def test_collect_streams_robot_observations(self, monkeypatch):
         _install_fake_lerobot(monkeypatch)
-        from rfx.collection import (
-            Dataset,
-            Recorder,
-            collect,
-            from_hub,
-            open_dataset,
-            pull,
-            push,
+        import rfx.collection as collection_mod
+
+        robot = _FakeRobot()
+        monkeypatch.setattr(collection_mod, "_create_robot", lambda *args, **kwargs: robot)
+
+        dataset = collection_mod.collect(
+            "so101",
+            "test/demo",
+            episodes=1,
+            duration_s=0.05,
+            fps=40,
         )
 
-        assert Dataset is not None
-        assert Recorder is not None
-        assert callable(collect)
-        assert callable(from_hub)
-        assert callable(open_dataset)
-        assert callable(pull)
-        assert callable(push)
+        assert dataset.num_episodes == 1
+        assert dataset.num_frames > 0
+        assert robot.reset_calls == 1
+        assert robot.observe_calls >= dataset.num_frames
+        assert robot.disconnect_calls == 1
 
-    def test_rfx_collection_import(self, monkeypatch):
+    def test_run_collection_returns_real_summary(self, monkeypatch):
         _install_fake_lerobot(monkeypatch)
-        import rfx
+        import rfx.collection as collection_mod
+        from rfx.collection._cli import run_collection
 
-        assert rfx.collection is not None
+        robot = _FakeRobot()
+        monkeypatch.setattr(collection_mod, "_create_robot", lambda *args, **kwargs: robot)
+
+        result = run_collection(
+            SimpleNamespace(
+                robot="so101",
+                repo_id="test/demo",
+                output="datasets",
+                episodes=1,
+                duration=0.05,
+                task="default",
+                fps=30,
+                rate_hz=None,
+                config=None,
+                port=None,
+                camera_id=[],
+                mock=False,
+                push=False,
+                mcap=False,
+                state_dim=None,
+            )
+        )
+
+        assert result["episodes"] == 1
+        assert result["total_frames"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -323,11 +375,28 @@ class TestCli:
         parser = argparse.ArgumentParser()
         add_collect_args(parser)
         args = parser.parse_args(
-            ["--robot", "so101", "--repo-id", "test/demo", "--episodes", "5", "--fps", "60"]
+            [
+                "--robot",
+                "so101",
+                "--repo-id",
+                "test/demo",
+                "--episodes",
+                "5",
+                "--fps",
+                "60",
+                "--rate-hz",
+                "20",
+                "--camera-id",
+                "0",
+                "--mock",
+            ]
         )
         assert args.robot == "so101"
         assert args.repo_id == "test/demo"
         assert args.episodes == 5
         assert args.fps == 60
+        assert args.rate_hz == 20.0
+        assert args.camera_id == ["0"]
+        assert args.mock is True
         assert args.push is False
         assert args.mcap is False
