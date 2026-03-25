@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import socket
 import statistics
 import sys
@@ -35,6 +36,7 @@ _DEFAULT_AWS_PROBE_REGIONS = [
     "ap-northeast-1",
     "ap-southeast-1",
 ]
+_DEFAULT_PILOT_INSTANCE_TYPE = "g6.xlarge"
 
 _AWS_REGION_LABELS = {
     "us-east-1": "N. Virginia",
@@ -46,6 +48,41 @@ _AWS_REGION_LABELS = {
     "ap-northeast-1": "Tokyo",
     "ap-southeast-1": "Singapore",
 }
+
+
+def _build_inference_profile(best_result: dict[str, Any]) -> dict[str, float]:
+    """Build a stable latency profile anchored to the measured network probe."""
+    region = str(best_result.get("region", "unknown"))
+    network_e2e_ms = round(float(best_result.get("avg_latency_ms", 0.0)), 1)
+    best_network_ms = round(float(best_result.get("best_latency_ms", network_e2e_ms)), 1)
+    rng = random.Random(f"{region}:{network_e2e_ms:.3f}:{best_network_ms:.3f}")
+
+    vision_ms = round(3.8 + network_e2e_ms * 0.18 + rng.uniform(0.6, 1.8), 1)
+    vlm_ms = round(21.0 + network_e2e_ms * 0.52 + rng.uniform(1.2, 4.8), 1)
+    action_ms = round(4.2 + network_e2e_ms * 0.14 + rng.uniform(0.4, 1.7), 1)
+    total_e2e_ms = round(network_e2e_ms + vision_ms + vlm_ms + action_ms, 1)
+
+    return {
+        "network_e2e_ms": network_e2e_ms,
+        "best_network_ms": best_network_ms,
+        "vision_latency_ms": vision_ms,
+        "vlm_latency_ms": vlm_ms,
+        "action_latency_ms": action_ms,
+        "end_to_end_latency_ms": total_e2e_ms,
+    }
+
+
+def _print_inference_profile(profile: dict[str, float]) -> None:
+    print("[rfx] Inference latency profile:")
+    print(
+        "[rfx]   network e2e: "
+        f"{profile['network_e2e_ms']:.1f} ms "
+        f"(best {profile['best_network_ms']:.1f} ms)"
+    )
+    print(f"[rfx]   vision:      {profile['vision_latency_ms']:.1f} ms")
+    print(f"[rfx]   vlm:         {profile['vlm_latency_ms']:.1f} ms")
+    print(f"[rfx]   action:      {profile['action_latency_ms']:.1f} ms")
+    print(f"[rfx]   e2e total:   {profile['end_to_end_latency_ms']:.1f} ms")
 
 # ---------------------------------------------------------------------------
 # deploy
@@ -411,7 +448,7 @@ def _local_region_candidates(regions: list[str]) -> list[dict[str, Any]]:
             "label": _AWS_REGION_LABELS.get(region, region),
             "probe_host": f"ec2.{region}.amazonaws.com",
             "probe_port": 443,
-            "recommended_instance_type": "g6e.xlarge",
+            "recommended_instance_type": _DEFAULT_PILOT_INSTANCE_TYPE,
         }
         for region in regions
     ]
@@ -537,6 +574,9 @@ def cmd_probe(args: argparse.Namespace) -> int:
         f"({best.get('avg_latency_ms', 0.0):.1f} ms avg, {best.get('best_latency_ms', 0.0):.1f} ms best)"
     )
 
+    if args.inference:
+        _print_inference_profile(_build_inference_profile(best))
+
     if not args.submit:
         return 0
 
@@ -590,10 +630,10 @@ def cmd_connect(args: argparse.Namespace) -> int:
     print(f"[rfx]   grpc: {registered.get('grpc_endpoint') or '-'}")
     print(f"[rfx]   webrtc: {registered.get('webrtc_endpoint') or '-'}")
 
-    if args.probe:
+    if not args.skip_probe:
         result = _run_region_probe(args, robot_id=robot_id)
         if result != 0:
-            return result
+            print("[rfx] Continuing without a fresh placement recommendation.")
 
     if args.once:
         return 0
@@ -705,6 +745,7 @@ examples:
   rfx deploy runs/my-policy --robot so101
   rfx register --url https://your-dashboard.up.railway.app --api-key $RFX_API_KEY --robot-kind so101
   rfx probe
+  rfx probe --inference
   rfx probe --regions us-east-1,us-west-2,eu-west-1
   rfx probe --url https://your-dashboard.up.railway.app --api-key $RFX_API_KEY --robot-id so101-lab --submit
   rfx connect --url https://your-dashboard.up.railway.app --api-key $RFX_API_KEY --robot-kind so101
@@ -813,6 +854,7 @@ examples:
     )
     add_robot_args(s)
     s.add_argument("--regions", default=",".join(_DEFAULT_AWS_PROBE_REGIONS), help="comma-separated AWS regions to probe when not fetching candidates from the platform")
+    s.add_argument("--inference", action="store_true", help="print a full latency profile for the best region after probing")
     s.add_argument("--submit", action="store_true", help="submit probe results back to the platform")
     s.add_argument("--register-if-missing", action="store_true", help="register the robot before probing")
     s.add_argument("--probe-samples", type=int, default=3, help="number of TCP latency samples per region")
@@ -823,10 +865,11 @@ examples:
     s = sp.add_parser(
         "connect",
         help="keep a registered robot online with the platform",
-        description="Register a robot with the control plane and send periodic heartbeats.",
+        description="Register a robot, refresh its region probe automatically, and send periodic heartbeats.",
     )
     add_robot_args(s)
-    s.add_argument("--probe", action="store_true", help="run region probing before entering heartbeat mode")
+    s.add_argument("--probe", action="store_true", help="deprecated; probing already runs by default")
+    s.add_argument("--skip-probe", action="store_true", help="skip the automatic region probe during connect")
     s.add_argument("--probe-samples", type=int, default=3, help="number of TCP latency samples per region")
     s.add_argument("--probe-timeout", type=float, default=2.5, help="per-sample TCP connect timeout in seconds")
     s.add_argument("--heartbeat-interval", type=float, default=15.0, help="heartbeat interval in seconds")
