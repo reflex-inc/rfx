@@ -148,19 +148,40 @@ class CameraStreamer:
             len(serials), self._fps,
         )
 
-        # Start pipelines
+        # Start pipelines — try multiple configs for compatibility (D405 etc.)
+        _STREAM_CONFIGS = [
+            (rs.stream.color, 640, 480, rs.format.bgr8),
+            (rs.stream.color, 424, 240, rs.format.bgr8),
+            (rs.stream.color, 848, 480, rs.format.bgr8),
+            (rs.stream.color, 1280, 720, rs.format.bgr8),
+        ]
         pipelines = []
         for serial in serials:
-            pipeline = rs.pipeline()
-            config = rs.config()
-            config.enable_device(serial)
-            config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, int(self._fps))
-            try:
-                pipeline.start(config)
-                pipelines.append(pipeline)
-                log.info("  RealSense %s started", serial)
-            except Exception as exc:
-                log.error("  RealSense %s failed: %s", serial, exc)
+            started = False
+            for stream_type, w, h, fmt in _STREAM_CONFIGS:
+                pipeline = rs.pipeline()
+                config = rs.config()
+                config.enable_device(serial)
+                config.enable_stream(stream_type, w, h, fmt, int(self._fps))
+                try:
+                    pipeline.start(config)
+                    pipelines.append(pipeline)
+                    log.info("  RealSense %s started (%dx%d)", serial, w, h)
+                    started = True
+                    break
+                except Exception:
+                    continue
+            if not started:
+                # Last resort: let RealSense pick any config
+                pipeline = rs.pipeline()
+                config = rs.config()
+                config.enable_device(serial)
+                try:
+                    pipeline.start(config)
+                    pipelines.append(pipeline)
+                    log.info("  RealSense %s started (default config)", serial)
+                except Exception as exc:
+                    log.error("  RealSense %s failed: %s", serial, exc)
 
         if not pipelines:
             log.error("No RealSense pipelines started")
@@ -184,9 +205,15 @@ class CameraStreamer:
                     try:
                         frames = pipeline.wait_for_frames(timeout_ms=100)
                         color_frame = frames.get_color_frame()
-                        if not color_frame:
-                            continue
-                        img = np.asanyarray(color_frame.get_data())
+                        if color_frame:
+                            img = np.asanyarray(color_frame.get_data())
+                        else:
+                            # D405 may only have infrared/depth — use infrared
+                            ir_frame = frames.get_infrared_frame()
+                            if not ir_frame:
+                                continue
+                            ir = np.asanyarray(ir_frame.get_data())
+                            img = cv2.cvtColor(ir, cv2.COLOR_GRAY2BGR) if ir.ndim == 2 else ir
                         ok, buf = cv2.imencode(".jpg", img, encode_params)
                         if ok:
                             ws.send(bytes([cam_idx]) + buf.tobytes())
