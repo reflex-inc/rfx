@@ -640,16 +640,35 @@ def _detect_cameras() -> tuple[list[str], list[str], str]:
     except ImportError:
         pass
 
-    # Detect USB cameras via OpenCV (skip RealSense devices already found)
+    # Detect USB cameras via OpenCV (skip RealSense V4L2 nodes)
     cv2_ids: list[str] = []
     cv2_names: list[str] = []
+
+    # On Linux, find which /dev/videoN belong to RealSense so we skip them
+    rs_video_indices: set[int] = set()
+    try:
+        from pathlib import Path
+        for dev in Path("/sys/class/video4linux").iterdir():
+            name_file = dev / "name"
+            if name_file.exists():
+                devname = name_file.read_text().strip().lower()
+                if "realsense" in devname or "intel(r) realsen" in devname:
+                    # e.g. video0 -> 0
+                    idx = dev.name.replace("video", "")
+                    if idx.isdigit():
+                        rs_video_indices.add(int(idx))
+    except Exception:
+        # Not Linux or no sysfs — if we found RealSense above, skip OpenCV entirely
+        if rs_ids:
+            rs_video_indices = set(range(16))
+
     try:
         import cv2
         for i in range(8):
+            if i in rs_video_indices:
+                continue
             cap = cv2.VideoCapture(i)
             if cap.isOpened():
-                # Try to get the device name to check if it's a RealSense
-                backend_name = cap.getBackendName() if hasattr(cap, 'getBackendName') else ""
                 cap.release()
                 cv2_ids.append(str(i))
                 cv2_names.append(f"camera_{i}")
