@@ -1,7 +1,7 @@
 """Stream camera frames to the rfx platform via WebSocket.
 
 Runs in a background thread so the main control loop is not blocked.
-Supports Intel RealSense (D405, etc.) and USB cameras via OpenCV.
+Supports Intel RealSense (D405, etc.), USB cameras via OpenCV, or both mixed.
 """
 
 from __future__ import annotations
@@ -13,37 +13,114 @@ import time
 log = logging.getLogger(__name__)
 
 
-def _detect_realsense_cameras() -> list[str]:
-    """Return serial numbers of connected RealSense devices."""
-    try:
+class _RealSenseSource:
+    """Wraps a RealSense pipeline as a frame source."""
+
+    def __init__(self, serial: str, fps: int):
         import pyrealsense2 as rs
-        ctx = rs.context()
-        return [d.get_info(rs.camera_info.serial_number) for d in ctx.query_devices()]
-    except ImportError:
-        return []
-    except Exception:
-        return []
+
+        self.serial = serial
+        self._pipeline = None
+        self._rs = rs
+
+        _CONFIGS = [
+            (rs.stream.color, 640, 480, rs.format.bgr8),
+            (rs.stream.color, 424, 240, rs.format.bgr8),
+            (rs.stream.color, 848, 480, rs.format.bgr8),
+            (rs.stream.color, 1280, 720, rs.format.bgr8),
+        ]
+
+        # Try explicit configs first
+        for stream_type, w, h, fmt in _CONFIGS:
+            pipeline = rs.pipeline()
+            config = rs.config()
+            config.enable_device(serial)
+            config.enable_stream(stream_type, w, h, fmt, fps)
+            try:
+                pipeline.start(config)
+                self._pipeline = pipeline
+                log.info("  %s started (%dx%d)", serial, w, h)
+                return
+            except Exception:
+                continue
+
+        # Fallback: let SDK pick
+        pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_device(serial)
+        try:
+            pipeline.start(config)
+            self._pipeline = pipeline
+            log.info("  %s started (default config)", serial)
+        except Exception as exc:
+            raise RuntimeError(f"RealSense {serial}: {exc}") from exc
+
+    def capture(self):
+        """Returns a BGR numpy array or None."""
+        import numpy as np
+        try:
+            import cv2
+        except ImportError:
+            return None
+
+        if self._pipeline is None:
+            return None
+        try:
+            frames = self._pipeline.wait_for_frames(timeout_ms=100)
+        except Exception:
+            return None
+
+        color = frames.get_color_frame()
+        if color:
+            return np.asanyarray(color.get_data())
+
+        ir = frames.get_infrared_frame()
+        if ir:
+            arr = np.asanyarray(ir.get_data())
+            return cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR) if arr.ndim == 2 else arr
+        return None
+
+    def release(self):
+        if self._pipeline:
+            try:
+                self._pipeline.stop()
+            except Exception:
+                pass
+            self._pipeline = None
+
+
+class _CV2Source:
+    """Wraps an OpenCV VideoCapture as a frame source."""
+
+    def __init__(self, device_id: int):
+        import cv2
+        self._cap = cv2.VideoCapture(device_id)
+        if not self._cap.isOpened():
+            raise RuntimeError(f"Cannot open camera {device_id}")
+        log.info("  camera_%d started", device_id)
+
+    def capture(self):
+        ret, frame = self._cap.read()
+        return frame if ret else None
+
+    def release(self):
+        if self._cap:
+            self._cap.release()
+            self._cap = None
 
 
 class CameraStreamer:
-    """Capture from cameras and push JPEG frames to the platform.
-
-    Supports two backends:
-    - ``realsense``: Intel RealSense cameras (D405, D435, etc.)
-    - ``cv2``: USB cameras via OpenCV
-
-    The backend is auto-detected: if pyrealsense2 is installed and
-    RealSense devices are found, it uses RealSense. Otherwise OpenCV.
+    """Capture from any mix of cameras and push JPEG frames to the platform.
 
     Args:
-        platform_url: Base URL of the platform (http or https).
-        robot_id: Robot identifier (must match the registered robot).
-        camera_ids: Device indices (OpenCV) or serial numbers (RealSense).
-            For RealSense, pass empty list to auto-detect all connected devices.
+        platform_url: Base URL of the platform.
+        robot_id: Robot identifier.
+        camera_ids: List of device IDs. RealSense serials (strings like "352122271378")
+            and OpenCV indices (strings like "0", "1") can be mixed.
         camera_names: Human-readable names for each camera.
         fps: Target capture rate.
         jpeg_quality: JPEG compression quality (1-100).
-        backend: ``"auto"``, ``"realsense"``, or ``"cv2"``.
+        backend: "auto", "realsense", "cv2", or "mixed".
     """
 
     def __init__(
@@ -59,21 +136,13 @@ class CameraStreamer:
         self._platform_url = platform_url.rstrip("/")
         self._robot_id = robot_id
         self._camera_ids = camera_ids or []
-        self._camera_names = camera_names
+        self._camera_names = camera_names or []
         self._fps = fps
         self._jpeg_quality = jpeg_quality
         self._backend = backend
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-
-    def _resolve_backend(self) -> str:
-        if self._backend != "auto":
-            return self._backend
-        serials = _detect_realsense_cameras()
-        if serials:
-            return "realsense"
-        return "cv2"
 
     @property
     def ws_url(self) -> str:
@@ -84,7 +153,7 @@ class CameraStreamer:
             base = "ws://" + base[len("http://"):]
         elif not base.startswith("ws"):
             base = "ws://" + base
-        names = ",".join(self._camera_names or [])
+        names = ",".join(self._camera_names)
         return f"{base}/cameras/{self._robot_id}/feed?cameras={names}"
 
     def start(self) -> None:
@@ -104,6 +173,34 @@ class CameraStreamer:
             self._thread.join(timeout=3.0)
             self._thread = None
 
+    def _is_realsense_id(self, cam_id: str) -> bool:
+        """RealSense serials are long numeric strings (10+ digits)."""
+        return len(cam_id) >= 6 and cam_id.isdigit() and int(cam_id) > 100
+
+    def _build_sources(self) -> list[_RealSenseSource | _CV2Source]:
+        """Create a frame source for each camera ID."""
+        rs_available = False
+        try:
+            import pyrealsense2  # noqa: F401
+            rs_available = True
+        except ImportError:
+            pass
+
+        sources = []
+        for cam_id in self._camera_ids:
+            sid = str(cam_id)
+            if rs_available and self._is_realsense_id(sid):
+                try:
+                    sources.append(_RealSenseSource(sid, int(self._fps)))
+                except Exception as exc:
+                    log.error("  %s", exc)
+            else:
+                try:
+                    sources.append(_CV2Source(int(sid)))
+                except Exception as exc:
+                    log.error("  %s", exc)
+        return sources
+
     def _run(self) -> None:
         try:
             import websockets.sync.client as ws_sync
@@ -111,181 +208,38 @@ class CameraStreamer:
             log.error("websockets not installed: pip install websockets")
             return
 
-        backend = self._resolve_backend()
-
-        if backend == "realsense":
-            self._run_realsense(ws_sync)
-        else:
-            self._run_cv2(ws_sync)
-
-    def _run_realsense(self, ws_sync) -> None:
-        import pyrealsense2 as rs
-        import numpy as np
-
-        try:
-            import cv2
-        except ImportError:
-            log.error("opencv-python needed for JPEG encoding: pip install opencv-python")
-            return
-
-        ctx = rs.context()
-        devices = ctx.query_devices()
-        if not devices:
-            log.error("No RealSense devices found")
-            return
-
-        # Resolve which devices to use
-        if self._camera_ids:
-            serials = [str(s) for s in self._camera_ids]
-        else:
-            serials = [d.get_info(rs.camera_info.serial_number) for d in devices]
-
-        if not self._camera_names:
-            self._camera_names = [f"realsense_{i}" for i in range(len(serials))]
-
-        log.info(
-            "RealSense streamer: %d camera(s) at %d fps",
-            len(serials), self._fps,
-        )
-
-        # Start pipelines — try multiple configs for compatibility (D405 etc.)
-        _STREAM_CONFIGS = [
-            (rs.stream.color, 640, 480, rs.format.bgr8),
-            (rs.stream.color, 424, 240, rs.format.bgr8),
-            (rs.stream.color, 848, 480, rs.format.bgr8),
-            (rs.stream.color, 1280, 720, rs.format.bgr8),
-        ]
-        pipelines = []
-        for serial in serials:
-            started = False
-            for stream_type, w, h, fmt in _STREAM_CONFIGS:
-                pipeline = rs.pipeline()
-                config = rs.config()
-                config.enable_device(serial)
-                config.enable_stream(stream_type, w, h, fmt, int(self._fps))
-                try:
-                    pipeline.start(config)
-                    pipelines.append(pipeline)
-                    log.info("  RealSense %s started (%dx%d)", serial, w, h)
-                    started = True
-                    break
-                except Exception:
-                    continue
-            if not started:
-                # Last resort: let RealSense pick any config
-                pipeline = rs.pipeline()
-                config = rs.config()
-                config.enable_device(serial)
-                try:
-                    pipeline.start(config)
-                    pipelines.append(pipeline)
-                    log.info("  RealSense %s started (default config)", serial)
-                except Exception as exc:
-                    log.error("  RealSense %s failed: %s", serial, exc)
-
-        if not pipelines:
-            log.error("No RealSense pipelines started")
-            return
-
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality]
-        interval = 1.0 / self._fps
-
-        try:
-            ws = ws_sync.connect(self.ws_url)
-        except Exception as exc:
-            log.error("WebSocket connect failed: %s", exc)
-            for p in pipelines:
-                p.stop()
-            return
-
-        try:
-            while not self._stop.is_set():
-                t0 = time.monotonic()
-                for cam_idx, pipeline in enumerate(pipelines):
-                    try:
-                        frames = pipeline.wait_for_frames(timeout_ms=100)
-                        color_frame = frames.get_color_frame()
-                        if color_frame:
-                            img = np.asanyarray(color_frame.get_data())
-                        else:
-                            # D405 may only have infrared/depth — use infrared
-                            ir_frame = frames.get_infrared_frame()
-                            if not ir_frame:
-                                continue
-                            ir = np.asanyarray(ir_frame.get_data())
-                            img = cv2.cvtColor(ir, cv2.COLOR_GRAY2BGR) if ir.ndim == 2 else ir
-                        ok, buf = cv2.imencode(".jpg", img, encode_params)
-                        if ok:
-                            ws.send(bytes([cam_idx]) + buf.tobytes())
-                    except Exception:
-                        continue
-
-                elapsed = time.monotonic() - t0
-                sleep_s = interval - elapsed
-                if sleep_s > 0:
-                    self._stop.wait(sleep_s)
-        except Exception as exc:
-            if not self._stop.is_set():
-                log.warning("Camera streamer error: %s", exc)
-        finally:
-            try:
-                ws.close()
-            except Exception:
-                pass
-            for p in pipelines:
-                try:
-                    p.stop()
-                except Exception:
-                    pass
-            log.info("Camera streamer stopped")
-
-    def _run_cv2(self, ws_sync) -> None:
         try:
             import cv2
         except ImportError:
             log.error("opencv-python not installed: pip install opencv-python")
             return
 
-        camera_ids = [int(c) for c in self._camera_ids] if self._camera_ids else [0]
+        sources = self._build_sources()
+        if not sources:
+            log.error("No cameras started")
+            return
 
-        if not self._camera_names:
-            self._camera_names = [f"camera_{i}" for i in camera_ids]
-
-        log.info(
-            "OpenCV streamer: %d camera(s) at %d fps",
-            len(camera_ids), self._fps,
-        )
-
-        caps = []
-        for device_id in camera_ids:
-            cap = cv2.VideoCapture(device_id)
-            if not cap.isOpened():
-                log.error("Failed to open camera %d", device_id)
-                return
-            caps.append(cap)
-
-        interval = 1.0 / self._fps
         encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality]
+        interval = 1.0 / self._fps
 
         try:
             ws = ws_sync.connect(self.ws_url)
         except Exception as exc:
             log.error("WebSocket connect failed: %s", exc)
-            for cap in caps:
-                cap.release()
+            for s in sources:
+                s.release()
             return
 
         try:
             while not self._stop.is_set():
                 t0 = time.monotonic()
-                for cam_idx, cap in enumerate(caps):
-                    ret, frame = cap.read()
-                    if not ret:
+                for cam_idx, source in enumerate(sources):
+                    img = source.capture()
+                    if img is None:
                         continue
-                    ok, buf = cv2.imencode(".jpg", frame, encode_params)
-                    if not ok:
-                        continue
-                    ws.send(bytes([cam_idx]) + buf.tobytes())
+                    ok, buf = cv2.imencode(".jpg", img, encode_params)
+                    if ok:
+                        ws.send(bytes([cam_idx]) + buf.tobytes())
 
                 elapsed = time.monotonic() - t0
                 sleep_s = interval - elapsed
@@ -299,6 +253,6 @@ class CameraStreamer:
                 ws.close()
             except Exception:
                 pass
-            for cap in caps:
-                cap.release()
+            for s in sources:
+                s.release()
             log.info("Camera streamer stopped")

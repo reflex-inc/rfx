@@ -613,41 +613,59 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
 
 def _detect_cameras() -> tuple[list[str], list[str], str]:
-    """Auto-detect connected cameras. Returns (ids, names, backend)."""
-    # Try RealSense first
+    """Auto-detect all connected cameras (RealSense + USB).
+
+    Returns (ids, names, backend).
+    backend is "mixed" when both RealSense and USB cameras are found,
+    "realsense" for only RealSense, "cv2" for only USB.
+    """
+    rs_ids: list[str] = []
+    rs_names: list[str] = []
+    rs_serials_set: set[str] = set()
+
+    # Detect RealSense cameras
     try:
         import pyrealsense2 as rs
         ctx = rs.context()
         devices = ctx.query_devices()
-        if devices:
-            serials = [d.get_info(rs.camera_info.serial_number) for d in devices]
-            names = []
-            for d in devices:
-                try:
-                    name = d.get_info(rs.camera_info.name).replace("Intel RealSense ", "")
-                except Exception:
-                    name = "realsense"
-                names.append(name.lower().replace(" ", "_"))
-            return serials, names, "realsense"
+        for d in devices:
+            try:
+                serial = d.get_info(rs.camera_info.serial_number)
+                name = d.get_info(rs.camera_info.name).replace("Intel RealSense ", "")
+                rs_ids.append(serial)
+                rs_names.append(name.lower().replace(" ", "_"))
+                rs_serials_set.add(serial)
+            except Exception:
+                pass
     except ImportError:
         pass
 
-    # Fall back to OpenCV — probe indices 0-3
+    # Detect USB cameras via OpenCV (skip RealSense devices already found)
+    cv2_ids: list[str] = []
+    cv2_names: list[str] = []
     try:
         import cv2
-        ids = []
-        names = []
-        for i in range(4):
+        for i in range(8):
             cap = cv2.VideoCapture(i)
             if cap.isOpened():
-                ids.append(str(i))
-                names.append(f"camera_{i}")
+                # Try to get the device name to check if it's a RealSense
+                backend_name = cap.getBackendName() if hasattr(cap, 'getBackendName') else ""
                 cap.release()
-        if ids:
-            return ids, names, "cv2"
+                cv2_ids.append(str(i))
+                cv2_names.append(f"camera_{i}")
     except ImportError:
         pass
 
+    # Combine
+    all_ids = rs_ids + cv2_ids
+    all_names = rs_names + cv2_names
+
+    if rs_ids and cv2_ids:
+        return all_ids, all_names, "mixed"
+    elif rs_ids:
+        return rs_ids, rs_names, "realsense"
+    elif cv2_ids:
+        return cv2_ids, cv2_names, "cv2"
     return [], [], ""
 
 
