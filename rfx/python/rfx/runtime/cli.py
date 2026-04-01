@@ -612,106 +612,131 @@ def cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def _detect_realsense() -> list[tuple[str, str]]:
+    """Detect Intel RealSense cameras.
+
+    Returns list of (serial, name) tuples.
+    """
+    try:
+        import pyrealsense2 as rs
+    except ImportError:
+        return []
+
+    result = []
+    for device in rs.context().query_devices():
+        try:
+            serial = device.get_info(rs.camera_info.serial_number)
+            name = device.get_info(rs.camera_info.name).replace("Intel RealSense ", "")
+            result.append((serial, name.lower().replace(" ", "_")))
+        except Exception:
+            pass
+    return result
+
+
+def _v4l2_realsense_indices() -> set[int]:
+    """On Linux, return /dev/videoN indices owned by RealSense devices.
+
+    A single RealSense exposes 6-8 V4L2 nodes (color, depth, IR, metadata).
+    We read /sys/class/video4linux/*/name and group by USB parent path so we
+    catch ALL nodes, not just the ones with 'RealSense' in the name.
+    """
+    from pathlib import Path
+
+    sysfs = Path("/sys/class/video4linux")
+    if not sysfs.exists():
+        return set()
+
+    # Map each video node to its USB parent path
+    node_to_parent: dict[str, str] = {}
+    rs_parents: set[str] = set()
+
+    for node in sysfs.iterdir():
+        try:
+            idx_str = node.name.replace("video", "")
+            if not idx_str.isdigit():
+                continue
+            parent = str((node / "device").resolve().parent)
+            node_to_parent[node.name] = parent
+
+            name_file = node / "name"
+            if name_file.exists():
+                devname = name_file.read_text().strip().lower()
+                if "realsense" in devname or "intel(r) realsen" in devname:
+                    rs_parents.add(parent)
+        except Exception:
+            pass
+
+    # Every video node under a RealSense USB parent gets skipped
+    return {
+        int(name.replace("video", ""))
+        for name, parent in node_to_parent.items()
+        if parent in rs_parents
+    }
+
+
+def _detect_usb_cameras(skip_indices: set[int]) -> list[tuple[str, str]]:
+    """Detect USB cameras via OpenCV, skipping given V4L2 indices.
+
+    Each candidate is verified with an actual frame read to filter out
+    metadata-only V4L2 nodes that OpenCV opens but can't capture from.
+
+    Returns list of (device_index_str, name) tuples.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return []
+
+    # Suppress OpenCV warnings during probing
+    log_level = cv2.getLogLevel() if hasattr(cv2, 'getLogLevel') else None
+    if hasattr(cv2, 'setLogLevel'):
+        cv2.setLogLevel(0)
+
+    result = []
+    for i in range(8):
+        if i in skip_indices:
+            continue
+        cap = cv2.VideoCapture(i)
+        if not cap.isOpened():
+            continue
+        ret, _ = cap.read()
+        cap.release()
+        if ret:
+            result.append((str(i), f"camera_{i}"))
+
+    # Restore log level
+    if log_level is not None and hasattr(cv2, 'setLogLevel'):
+        cv2.setLogLevel(log_level)
+
+    return result
+
+
 def _detect_cameras() -> tuple[list[str], list[str], str]:
     """Auto-detect all connected cameras (RealSense + USB).
 
-    Returns (ids, names, backend).
-    backend is "mixed" when both RealSense and USB cameras are found,
-    "realsense" for only RealSense, "cv2" for only USB.
+    Returns (ids, names, backend) where backend is "mixed", "realsense",
+    "cv2", or "" if nothing found.
     """
-    rs_ids: list[str] = []
-    rs_names: list[str] = []
-    rs_serials_set: set[str] = set()
+    rs_cameras = _detect_realsense()
 
-    # Detect RealSense cameras
+    # Figure out which V4L2 indices to skip (Linux only)
     try:
-        import pyrealsense2 as rs
-        ctx = rs.context()
-        devices = ctx.query_devices()
-        for d in devices:
-            try:
-                serial = d.get_info(rs.camera_info.serial_number)
-                name = d.get_info(rs.camera_info.name).replace("Intel RealSense ", "")
-                rs_ids.append(serial)
-                rs_names.append(name.lower().replace(" ", "_"))
-                rs_serials_set.add(serial)
-            except Exception:
-                pass
-    except ImportError:
-        pass
-
-    # Detect USB cameras via OpenCV (skip RealSense V4L2 nodes)
-    cv2_ids: list[str] = []
-    cv2_names: list[str] = []
-
-    # On Linux, find which /dev/videoN belong to RealSense so we skip them.
-    # A single RealSense can expose 6-8 video nodes (color, depth, IR, metadata).
-    # We find the USB device path and skip ALL video nodes under the same USB parent.
-    rs_video_indices: set[int] = set()
-    try:
-        from pathlib import Path
-        sysfs = Path("/sys/class/video4linux")
-        if sysfs.exists():
-            # First pass: find USB device paths that contain "realsense" or "intel"
-            rs_usb_paths: set[str] = set()
-            for dev in sysfs.iterdir():
-                name_file = dev / "name"
-                if name_file.exists():
-                    devname = name_file.read_text().strip().lower()
-                    if "realsense" in devname or "intel(r) realsen" in devname:
-                        # Walk up to find the USB device path
-                        real = (dev / "device").resolve()
-                        usb_parent = str(real.parent)
-                        rs_usb_paths.add(usb_parent)
-
-            # Second pass: skip ALL video nodes under those USB parents
-            if rs_usb_paths:
-                for dev in sysfs.iterdir():
-                    try:
-                        real = (dev / "device").resolve()
-                        if str(real.parent) in rs_usb_paths:
-                            idx = dev.name.replace("video", "")
-                            if idx.isdigit():
-                                rs_video_indices.add(int(idx))
-                    except Exception:
-                        pass
+        skip = _v4l2_realsense_indices()
     except Exception:
-        pass
+        # Not Linux or sysfs issue — if RealSense found, skip all V4L2
+        skip = set(range(16)) if rs_cameras else set()
 
-    # If we found RealSense cameras but couldn't identify their video nodes, skip all
-    if rs_ids and not rs_video_indices:
-        rs_video_indices = set(range(16))
+    usb_cameras = _detect_usb_cameras(skip)
 
-    try:
-        import cv2
-        # On Linux, real video capture nodes are typically even-numbered;
-        # odd nodes are metadata endpoints. Probe only even indices first,
-        # then odd if we found nothing.
-        probe_order = [i for i in range(8) if i % 2 == 0] + [i for i in range(8) if i % 2 != 0]
-        for i in probe_order:
-            if i in rs_video_indices:
-                continue
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                # Verify we can actually read a frame (filters out metadata nodes)
-                ret, _ = cap.read()
-                cap.release()
-                if ret:
-                    cv2_ids.append(str(i))
-                    cv2_names.append(f"camera_{i}")
-    except ImportError:
-        pass
+    all_ids = [c[0] for c in rs_cameras] + [c[0] for c in usb_cameras]
+    all_names = [c[1] for c in rs_cameras] + [c[1] for c in usb_cameras]
 
-    # Combine
-    all_ids = rs_ids + cv2_ids
-    all_names = rs_names + cv2_names
-
-    if rs_ids and cv2_ids:
+    if rs_cameras and usb_cameras:
         return all_ids, all_names, "mixed"
-    elif rs_ids:
-        return rs_ids, rs_names, "realsense"
-    elif cv2_ids:
-        return cv2_ids, cv2_names, "cv2"
+    if rs_cameras:
+        return all_ids, all_names, "realsense"
+    if usb_cameras:
+        return all_ids, all_names, "cv2"
     return [], [], ""
 
 
