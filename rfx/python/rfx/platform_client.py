@@ -67,7 +67,7 @@ def register_robot(
 ) -> dict[str, Any]:
     return _request_json(
         _base_url(url),
-        "/api/robots/register",
+        "/robots/register",
         {
             "robot_id": robot_id,
             "org_id": org_id,
@@ -93,7 +93,7 @@ def heartbeat_robot(
 ) -> dict[str, Any]:
     return _request_json(
         _base_url(url),
-        "/api/robots/heartbeat",
+        "/robots/heartbeat",
         {
             "robot_id": robot_id,
             "transport": transport,
@@ -107,7 +107,7 @@ def heartbeat_robot(
 def disconnect_robot(*, url: str | None, api_key: str | None, robot_id: str) -> dict[str, Any]:
     return _request_json(
         _base_url(url),
-        "/api/robots/disconnect",
+        "/robots/disconnect",
         {"robot_id": robot_id},
         api_key=_api_key(api_key),
     )
@@ -116,7 +116,7 @@ def disconnect_robot(*, url: str | None, api_key: str | None, robot_id: str) -> 
 def fetch_region_candidates(*, url: str | None, api_key: str | None) -> list[dict[str, Any]]:
     response = _request_json(
         _base_url(url),
-        "/api/regions/candidates",
+        "/regions/candidates",
         None,
         api_key=_api_key(api_key),
         method="GET",
@@ -133,7 +133,7 @@ def submit_probe_results(
 ) -> dict[str, Any]:
     response = _request_json(
         _base_url(url),
-        "/api/robots/probe-results",
+        "/robots/probe-results",
         {
             "robot_id": robot_id,
             "results": results,
