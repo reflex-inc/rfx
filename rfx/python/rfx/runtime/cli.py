@@ -612,33 +612,80 @@ def cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def _detect_cameras() -> tuple[list[str], list[str], str]:
+    """Auto-detect connected cameras. Returns (ids, names, backend)."""
+    # Try RealSense first
+    try:
+        import pyrealsense2 as rs
+        ctx = rs.context()
+        devices = ctx.query_devices()
+        if devices:
+            serials = [d.get_info(rs.camera_info.serial_number) for d in devices]
+            names = []
+            for d in devices:
+                try:
+                    name = d.get_info(rs.camera_info.name).replace("Intel RealSense ", "")
+                except Exception:
+                    name = "realsense"
+                names.append(name.lower().replace(" ", "_"))
+            return serials, names, "realsense"
+    except ImportError:
+        pass
+
+    # Fall back to OpenCV — probe indices 0-3
+    try:
+        import cv2
+        ids = []
+        names = []
+        for i in range(4):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                ids.append(str(i))
+                names.append(f"camera_{i}")
+                cap.release()
+        if ids:
+            return ids, names, "cv2"
+    except ImportError:
+        pass
+
+    return [], [], ""
+
+
 def cmd_connect(args: argparse.Namespace) -> int:
-    """Register a robot with the control plane and keep it online."""
+    """Connect a robot to the platform with auto-detected cameras."""
     from rfx.platform_client import (
         disconnect_robot,
         heartbeat_robot,
     )
 
-    # Parse camera args
-    camera_ids = []
-    camera_names = []
-    if args.cameras:
-        camera_ids = [int(c.strip()) for c in args.cameras.split(",") if c.strip()]
-    if args.camera_names:
-        camera_names = [n.strip() for n in args.camera_names.split(",") if n.strip()]
+    # Auto-detect or parse cameras
+    camera_ids: list[str] = []
+    camera_names: list[str] = []
+    camera_backend = "auto"
 
+    if args.cameras:
+        camera_ids = [c.strip() for c in args.cameras.split(",") if c.strip()]
+        if args.camera_names:
+            camera_names = [n.strip() for n in args.camera_names.split(",") if n.strip()]
+        else:
+            camera_names = [f"camera_{i}" for i in range(len(camera_ids))]
+    elif not args.no_cameras:
+        print("[rfx] Detecting cameras...")
+        camera_ids, camera_names, camera_backend = _detect_cameras()
+        if camera_ids:
+            print(f"[rfx]   Found {len(camera_ids)} camera(s): {', '.join(camera_names)}")
+        else:
+            print("[rfx]   No cameras detected")
+
+    # Build metadata
+    metadata = _parse_metadata(args)
+    if camera_ids:
+        metadata["cameras"] = str(len(camera_ids))
+        metadata["camera_names"] = ",".join(camera_names)
+
+    # Register
     try:
-        # Include camera count in metadata
-        metadata = _parse_metadata(args)
-        if camera_ids:
-            metadata["cameras"] = str(len(camera_ids))
-            if camera_names:
-                metadata["camera_names"] = ",".join(camera_names)
-        robot_id, _metadata_unused, registered = _register_robot_from_args(args)
-        # Re-merge so camera metadata is included in heartbeats
-        metadata.update(_parse_metadata(args))
-        if camera_ids:
-            metadata["cameras"] = str(len(camera_ids))
+        robot_id, _, registered = _register_robot_from_args(args)
     except ValueError as exc:
         print(f"[rfx] {exc}")
         return 1
@@ -646,41 +693,40 @@ def cmd_connect(args: argparse.Namespace) -> int:
         print(f"[rfx] Connect failed: {type(exc).__name__}: {exc}")
         return 1
 
-    print(f"[rfx] Robot registered: {registered.get('display_name') or registered.get('robot_id')}")
-    print(f"[rfx]   robot_id: {registered.get('robot_id')}")
-    print(f"[rfx]   transport: {registered.get('transport')}")
-    print(f"[rfx]   grpc: {registered.get('grpc_endpoint') or '-'}")
-    print(f"[rfx]   webrtc: {registered.get('webrtc_endpoint') or '-'}")
+    display = registered.get('display_name') or registered.get('robot_id')
+    print(f"[rfx] Connected: {display}")
 
-    # Start camera streaming if cameras specified
+    # Start camera streaming
     cam_streamer = None
     if camera_ids:
         from rfx.camera_streamer import CameraStreamer
 
-        platform_url = args.url or ""
+        from rfx.platform_client import _base_url
+        platform_url = _base_url(args.url)
         cam_streamer = CameraStreamer(
             platform_url=platform_url,
             robot_id=robot_id,
             camera_ids=camera_ids,
-            camera_names=camera_names or None,
+            camera_names=camera_names,
             fps=args.camera_fps,
             jpeg_quality=args.camera_quality,
+            backend=camera_backend,
         )
         cam_streamer.start()
-        names_display = ", ".join(camera_names) if camera_names else ", ".join(str(c) for c in camera_ids)
-        print(f"[rfx]   cameras: {names_display} ({args.camera_fps} fps)")
+        print(f"[rfx]   Streaming {len(camera_ids)} camera(s) at {args.camera_fps} fps")
+        for name in camera_names:
+            print(f"[rfx]     - {name}")
 
-    if not args.skip_probe:
-        result = _run_region_probe(args, robot_id=robot_id)
-        if result != 0:
-            print("[rfx] Continuing without a fresh placement recommendation.")
+    # Region probe only if explicitly requested
+    if args.probe:
+        _run_region_probe(args, robot_id=robot_id)
 
     if args.once:
         if cam_streamer:
             cam_streamer.stop()
         return 0
 
-    print(f"[rfx] Sending heartbeat every {args.heartbeat_interval:.1f}s. Ctrl+C to disconnect.")
+    print(f"[rfx] Online. Ctrl+C to disconnect.")
     try:
         while True:
             time.sleep(args.heartbeat_interval)
@@ -699,7 +745,7 @@ def cmd_connect(args: argparse.Namespace) -> int:
             disconnect_robot(url=args.url, api_key=args.api_key, robot_id=robot_id)
         except Exception:
             pass
-        print("\n[rfx] Robot disconnected.")
+        print("\n[rfx] Disconnected.")
     except Exception as exc:
         if cam_streamer:
             cam_streamer.stop()
@@ -910,20 +956,20 @@ examples:
     # --- connect ---
     s = sp.add_parser(
         "connect",
-        help="keep a registered robot online with the platform",
-        description="Register a robot, refresh its region probe automatically, and send periodic heartbeats.",
+        help="connect a robot to the platform with cameras",
+        description="Register a robot, auto-detect cameras, and stream to the platform.",
     )
     add_robot_args(s)
-    s.add_argument("--probe", action="store_true", help="deprecated; probing already runs by default")
-    s.add_argument("--skip-probe", action="store_true", help="skip the automatic region probe during connect")
-    s.add_argument("--probe-samples", type=int, default=3, help="number of TCP latency samples per region")
-    s.add_argument("--probe-timeout", type=float, default=2.5, help="per-sample TCP connect timeout in seconds")
-    s.add_argument("--heartbeat-interval", type=float, default=15.0, help="heartbeat interval in seconds")
-    s.add_argument("--once", action="store_true", help="register once and exit without heartbeats")
-    s.add_argument("--cameras", default=None, help="comma-separated camera device indices to stream (e.g. 0,1)")
-    s.add_argument("--camera-names", default=None, help="comma-separated camera names (e.g. front,wrist)")
+    s.add_argument("--cameras", default=None, help="camera device indices or RealSense serials (e.g. 0,1). Auto-detected if omitted.")
+    s.add_argument("--camera-names", default=None, help="camera names (e.g. wrist,overhead)")
     s.add_argument("--camera-fps", type=float, default=10, help="camera stream FPS (default: 10)")
     s.add_argument("--camera-quality", type=int, default=70, help="JPEG quality 1-100 (default: 70)")
+    s.add_argument("--no-cameras", action="store_true", help="skip camera detection and streaming")
+    s.add_argument("--probe", action="store_true", help="run AWS region latency probe")
+    s.add_argument("--probe-samples", type=int, default=3, help="probe samples per region")
+    s.add_argument("--probe-timeout", type=float, default=2.5, help="probe timeout per sample")
+    s.add_argument("--heartbeat-interval", type=float, default=15.0, help="heartbeat interval in seconds")
+    s.add_argument("--once", action="store_true", help="register once and exit")
     s.set_defaults(fn=cmd_connect)
 
     # --- runs ---
