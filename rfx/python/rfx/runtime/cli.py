@@ -684,14 +684,21 @@ def _detect_cameras() -> tuple[list[str], list[str], str]:
 
     try:
         import cv2
-        for i in range(8):
+        # On Linux, real video capture nodes are typically even-numbered;
+        # odd nodes are metadata endpoints. Probe only even indices first,
+        # then odd if we found nothing.
+        probe_order = [i for i in range(8) if i % 2 == 0] + [i for i in range(8) if i % 2 != 0]
+        for i in probe_order:
             if i in rs_video_indices:
                 continue
             cap = cv2.VideoCapture(i)
             if cap.isOpened():
+                # Verify we can actually read a frame (filters out metadata nodes)
+                ret, _ = cap.read()
                 cap.release()
-                cv2_ids.append(str(i))
-                cv2_names.append(f"camera_{i}")
+                if ret:
+                    cv2_ids.append(str(i))
+                    cv2_names.append(f"camera_{i}")
     except ImportError:
         pass
 
