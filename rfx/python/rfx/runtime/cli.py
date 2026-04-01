@@ -644,23 +644,43 @@ def _detect_cameras() -> tuple[list[str], list[str], str]:
     cv2_ids: list[str] = []
     cv2_names: list[str] = []
 
-    # On Linux, find which /dev/videoN belong to RealSense so we skip them
+    # On Linux, find which /dev/videoN belong to RealSense so we skip them.
+    # A single RealSense can expose 6-8 video nodes (color, depth, IR, metadata).
+    # We find the USB device path and skip ALL video nodes under the same USB parent.
     rs_video_indices: set[int] = set()
     try:
         from pathlib import Path
-        for dev in Path("/sys/class/video4linux").iterdir():
-            name_file = dev / "name"
-            if name_file.exists():
-                devname = name_file.read_text().strip().lower()
-                if "realsense" in devname or "intel(r) realsen" in devname:
-                    # e.g. video0 -> 0
-                    idx = dev.name.replace("video", "")
-                    if idx.isdigit():
-                        rs_video_indices.add(int(idx))
+        sysfs = Path("/sys/class/video4linux")
+        if sysfs.exists():
+            # First pass: find USB device paths that contain "realsense" or "intel"
+            rs_usb_paths: set[str] = set()
+            for dev in sysfs.iterdir():
+                name_file = dev / "name"
+                if name_file.exists():
+                    devname = name_file.read_text().strip().lower()
+                    if "realsense" in devname or "intel(r) realsen" in devname:
+                        # Walk up to find the USB device path
+                        real = (dev / "device").resolve()
+                        usb_parent = str(real.parent)
+                        rs_usb_paths.add(usb_parent)
+
+            # Second pass: skip ALL video nodes under those USB parents
+            if rs_usb_paths:
+                for dev in sysfs.iterdir():
+                    try:
+                        real = (dev / "device").resolve()
+                        if str(real.parent) in rs_usb_paths:
+                            idx = dev.name.replace("video", "")
+                            if idx.isdigit():
+                                rs_video_indices.add(int(idx))
+                    except Exception:
+                        pass
     except Exception:
-        # Not Linux or no sysfs — if we found RealSense above, skip OpenCV entirely
-        if rs_ids:
-            rs_video_indices = set(range(16))
+        pass
+
+    # If we found RealSense cameras but couldn't identify their video nodes, skip all
+    if rs_ids and not rs_video_indices:
+        rs_video_indices = set(range(16))
 
     try:
         import cv2
