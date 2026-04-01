@@ -637,8 +637,9 @@ def _v4l2_realsense_indices() -> set[int]:
     """On Linux, return /dev/videoN indices owned by RealSense devices.
 
     A single RealSense exposes 6-8 V4L2 nodes (color, depth, IR, metadata).
-    We read /sys/class/video4linux/*/name and group by USB parent path so we
-    catch ALL nodes, not just the ones with 'RealSense' in the name.
+    We check each node's name in /sys/class/video4linux/*/name for 'RealSense'.
+    Nodes whose name contains 'RealSense' or whose device symlink points to the
+    same USB *interface* (not hub) as a known RealSense node are included.
     """
     from pathlib import Path
 
@@ -646,31 +647,32 @@ def _v4l2_realsense_indices() -> set[int]:
     if not sysfs.exists():
         return set()
 
-    # Map each video node to its USB parent path
-    node_to_parent: dict[str, str] = {}
-    rs_parents: set[str] = set()
+    # Map each video node to its direct device path (USB interface, not hub)
+    node_to_device: dict[str, str] = {}
+    rs_devices: set[str] = set()
 
     for node in sysfs.iterdir():
         try:
             idx_str = node.name.replace("video", "")
             if not idx_str.isdigit():
                 continue
-            parent = str((node / "device").resolve().parent)
-            node_to_parent[node.name] = parent
+            # Resolve the device symlink — this points to the USB interface
+            device_path = str((node / "device").resolve())
+            node_to_device[node.name] = device_path
 
             name_file = node / "name"
             if name_file.exists():
                 devname = name_file.read_text().strip().lower()
                 if "realsense" in devname or "intel(r) realsen" in devname:
-                    rs_parents.add(parent)
+                    rs_devices.add(device_path)
         except Exception:
             pass
 
-    # Every video node under a RealSense USB parent gets skipped
+    # Only skip nodes that share the exact same USB interface as a RealSense
     return {
         int(name.replace("video", ""))
-        for name, parent in node_to_parent.items()
-        if parent in rs_parents
+        for name, device in node_to_device.items()
+        if device in rs_devices
     }
 
 
