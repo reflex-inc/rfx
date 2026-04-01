@@ -674,40 +674,96 @@ def _v4l2_realsense_indices() -> set[int]:
     }
 
 
-def _detect_usb_cameras(skip_indices: set[int]) -> list[tuple[str, str]]:
-    """Detect USB cameras via OpenCV, skipping given V4L2 indices.
+def _v4l2_capture_devices() -> list[tuple[int, str]]:
+    """Read /sys/class/video4linux to find actual video capture devices.
 
-    Each candidate is verified with an actual frame read to filter out
-    metadata-only V4L2 nodes that OpenCV opens but can't capture from.
+    V4L2 devices have a 'device_caps' file with capability flags.
+    Bit 0 (0x1) of device_caps = VIDEO_CAPTURE capability.
+    Devices without this bit are metadata or output-only nodes.
+
+    Returns list of (index, device_name) for capture-capable devices.
+    """
+    from pathlib import Path
+    import struct
+    import fcntl
+
+    sysfs = Path("/sys/class/video4linux")
+    if not sysfs.exists():
+        return []
+
+    result = []
+    for node in sorted(sysfs.iterdir()):
+        idx_str = node.name.replace("video", "")
+        if not idx_str.isdigit():
+            continue
+        idx = int(idx_str)
+
+        # Check V4L2 device_caps via ioctl VIDIOC_QUERYCAP
+        dev_path = Path(f"/dev/{node.name}")
+        if not dev_path.exists():
+            continue
+
+        try:
+            fd = open(dev_path, "rb")
+            # VIDIOC_QUERYCAP = 0x80685600
+            # struct v4l2_capability is 104 bytes
+            buf = bytearray(104)
+            fcntl.ioctl(fd, 0x80685600, buf)
+            fd.close()
+
+            # device_caps is at offset 100 (last 4 bytes), little-endian u32
+            device_caps = struct.unpack_from("<I", buf, 100)[0]
+
+            # V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+            # V4L2_CAP_META_CAPTURE = 0x00800000
+            is_capture = bool(device_caps & 0x1)
+            is_meta = bool(device_caps & 0x00800000)
+
+            if is_capture and not is_meta:
+                name_file = node / "name"
+                devname = name_file.read_text().strip() if name_file.exists() else node.name
+                result.append((idx, devname))
+        except Exception:
+            continue
+
+    return result
+
+
+def _detect_usb_cameras(skip_indices: set[int]) -> list[tuple[str, str]]:
+    """Detect USB cameras, skipping RealSense indices.
+
+    On Linux, uses V4L2 device capabilities to find real capture devices.
+    Falls back to OpenCV probing on other platforms.
 
     Returns list of (device_index_str, name) tuples.
     """
+    import sys
+
+    if sys.platform == "linux":
+        result = []
+        for idx, devname in _v4l2_capture_devices():
+            if idx in skip_indices:
+                continue
+            clean_name = devname.lower().replace(" ", "_").replace(":", "")
+            result.append((str(idx), clean_name))
+        return result
+
+    # Non-Linux: fall back to OpenCV probe
     try:
         import cv2
     except ImportError:
         return []
-
-    # Suppress OpenCV warnings during probing
-    log_level = cv2.getLogLevel() if hasattr(cv2, 'getLogLevel') else None
-    if hasattr(cv2, 'setLogLevel'):
-        cv2.setLogLevel(0)
 
     result = []
     for i in range(8):
         if i in skip_indices:
             continue
         cap = cv2.VideoCapture(i)
-        if not cap.isOpened():
-            continue
-        ret, _ = cap.read()
-        cap.release()
-        if ret:
-            result.append((str(i), f"camera_{i}"))
-
-    # Restore log level
-    if log_level is not None and hasattr(cv2, 'setLogLevel'):
-        cv2.setLogLevel(log_level)
-
+        if cap.isOpened():
+            ret, _ = cap.read()
+            cap.release()
+            if ret:
+                result.append((str(i), f"camera_{i}"))
     return result
 
 
