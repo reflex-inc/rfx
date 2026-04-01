@@ -619,8 +619,26 @@ def cmd_connect(args: argparse.Namespace) -> int:
         heartbeat_robot,
     )
 
+    # Parse camera args
+    camera_ids = []
+    camera_names = []
+    if args.cameras:
+        camera_ids = [int(c.strip()) for c in args.cameras.split(",") if c.strip()]
+    if args.camera_names:
+        camera_names = [n.strip() for n in args.camera_names.split(",") if n.strip()]
+
     try:
-        robot_id, metadata, registered = _register_robot_from_args(args)
+        # Include camera count in metadata
+        metadata = _parse_metadata(args)
+        if camera_ids:
+            metadata["cameras"] = str(len(camera_ids))
+            if camera_names:
+                metadata["camera_names"] = ",".join(camera_names)
+        robot_id, _metadata_unused, registered = _register_robot_from_args(args)
+        # Re-merge so camera metadata is included in heartbeats
+        metadata.update(_parse_metadata(args))
+        if camera_ids:
+            metadata["cameras"] = str(len(camera_ids))
     except ValueError as exc:
         print(f"[rfx] {exc}")
         return 1
@@ -634,12 +652,32 @@ def cmd_connect(args: argparse.Namespace) -> int:
     print(f"[rfx]   grpc: {registered.get('grpc_endpoint') or '-'}")
     print(f"[rfx]   webrtc: {registered.get('webrtc_endpoint') or '-'}")
 
+    # Start camera streaming if cameras specified
+    cam_streamer = None
+    if camera_ids:
+        from rfx.camera_streamer import CameraStreamer
+
+        platform_url = args.url or ""
+        cam_streamer = CameraStreamer(
+            platform_url=platform_url,
+            robot_id=robot_id,
+            camera_ids=camera_ids,
+            camera_names=camera_names or None,
+            fps=args.camera_fps,
+            jpeg_quality=args.camera_quality,
+        )
+        cam_streamer.start()
+        names_display = ", ".join(camera_names) if camera_names else ", ".join(str(c) for c in camera_ids)
+        print(f"[rfx]   cameras: {names_display} ({args.camera_fps} fps)")
+
     if not args.skip_probe:
         result = _run_region_probe(args, robot_id=robot_id)
         if result != 0:
             print("[rfx] Continuing without a fresh placement recommendation.")
 
     if args.once:
+        if cam_streamer:
+            cam_streamer.stop()
         return 0
 
     print(f"[rfx] Sending heartbeat every {args.heartbeat_interval:.1f}s. Ctrl+C to disconnect.")
@@ -655,12 +693,16 @@ def cmd_connect(args: argparse.Namespace) -> int:
                 metadata=metadata,
             )
     except KeyboardInterrupt:
+        if cam_streamer:
+            cam_streamer.stop()
         try:
             disconnect_robot(url=args.url, api_key=args.api_key, robot_id=robot_id)
         except Exception:
             pass
         print("\n[rfx] Robot disconnected.")
     except Exception as exc:
+        if cam_streamer:
+            cam_streamer.stop()
         print(f"[rfx] Heartbeat failed: {type(exc).__name__}: {exc}")
         return 1
     return 0
@@ -878,6 +920,10 @@ examples:
     s.add_argument("--probe-timeout", type=float, default=2.5, help="per-sample TCP connect timeout in seconds")
     s.add_argument("--heartbeat-interval", type=float, default=15.0, help="heartbeat interval in seconds")
     s.add_argument("--once", action="store_true", help="register once and exit without heartbeats")
+    s.add_argument("--cameras", default=None, help="comma-separated camera device indices to stream (e.g. 0,1)")
+    s.add_argument("--camera-names", default=None, help="comma-separated camera names (e.g. front,wrist)")
+    s.add_argument("--camera-fps", type=float, default=10, help="camera stream FPS (default: 10)")
+    s.add_argument("--camera-quality", type=int, default=70, help="JPEG quality 1-100 (default: 70)")
     s.set_defaults(fn=cmd_connect)
 
     # --- runs ---

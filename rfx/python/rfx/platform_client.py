@@ -8,17 +8,17 @@ from typing import Any
 from urllib import error, request
 
 
+_DEFAULT_PLATFORM_URL = "https://platform-production-f7cd.up.railway.app"
+
+
 def _base_url(url: str | None) -> str:
     resolved = (url or os.environ.get("RFX_PLATFORM_URL", "")).strip().rstrip("/")
-    if not resolved:
-        raise ValueError("Platform URL is required. Set --url or RFX_PLATFORM_URL.")
-    return resolved
+    return resolved or _DEFAULT_PLATFORM_URL
 
 
 def _api_key(value: str | None) -> str:
     resolved = (value or os.environ.get("RFX_PLATFORM_API_KEY", "")).strip()
-    if not resolved:
-        raise ValueError("Platform API key is required. Set --api-key or RFX_PLATFORM_API_KEY.")
+    # API key is optional — platform may run without auth requirement
     return resolved
 
 
